@@ -14,4 +14,3 @@ build/
 node_modules/
 CLAUDE.md
 .env.example
-/.planning
