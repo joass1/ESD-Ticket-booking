@@ -12,7 +12,7 @@ This roadmap delivers a microservices event ticketing platform across 6 phases, 
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Infrastructure Foundation** - Docker Compose, shared AMQP library, database init, healthchecks, and response conventions
+- [x] **Phase 1: Infrastructure Foundation** - Docker Compose, shared AMQP library, database init, healthchecks, and response conventions (completed 2026-03-13)
 - [ ] **Phase 2: Foundation Services** - Event, Seat, and Booking data services with Redis distributed locking
 - [ ] **Phase 3: Booking Saga** - Orchestrator, Payment, and Ticket services delivering end-to-end Scenario 1
 - [ ] **Phase 4: Waitlist and Notifications** - Waitlist choreography (Scenario 2) and Notification Service across all exchanges
@@ -35,8 +35,8 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 Plans:
 - [x] 01-01-PLAN.md -- Docker Compose infrastructure, database init.sql with all 9 schemas and seed data, Kong declarative config, env template
-- [ ] 01-02-PLAN.md -- Shared AMQP library, shared response helper, all 9 minimal service scaffolds with /health endpoints
-- [ ] 01-03-PLAN.md -- Integration verification: boot stack, test health endpoints, test databases, test AMQP publish/consume
+- [x] 01-02-PLAN.md -- Shared AMQP library, shared response helper, all 9 minimal service scaffolds with /health endpoints
+- [x] 01-03-PLAN.md -- Integration verification: boot stack, test health endpoints, test databases, test AMQP publish/consume
 
 ### Phase 2: Foundation Services
 **Goal**: Users can browse events, view seat availability with real-time locking, and the booking record layer is ready for orchestration
@@ -130,7 +130,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Infrastructure Foundation | 1/3 | In Progress | - |
+| 1. Infrastructure Foundation | 3/3 | Complete   | 2026-03-13 |
 | 2. Foundation Services | 0/3 | Not started | - |
 | 3. Booking Saga | 0/3 | Not started | - |
 | 4. Waitlist and Notifications | 0/3 | Not started | - |
