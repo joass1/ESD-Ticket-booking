@@ -10,8 +10,21 @@ Tests run in order -- later tests depend on state from earlier tests.
 """
 
 import sys
+import os
 import time
 import requests
+
+# Load .env for STRIPE_SECRET_KEY (needed to confirm PaymentIntent in tests)
+env_path = os.path.join(os.path.dirname(__file__), '..', '.env')
+if os.path.exists(env_path):
+    with open(env_path) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#') and '=' in line:
+                key, val = line.split('=', 1)
+                os.environ.setdefault(key.strip(), val.strip())
+
+STRIPE_SECRET_KEY = os.environ.get('STRIPE_SECRET_KEY', '')
 
 ORCHESTRATOR_URL = "http://localhost:5010"
 BOOKING_URL = "http://localhost:5002"
@@ -135,10 +148,28 @@ def test_booking_created_pending():
 
 
 def test_confirm_payment():
-    """BOOK-01: Confirm the booking via orchestrator (requires real Stripe key)."""
+    """BOOK-01: Confirm the booking via orchestrator (requires real Stripe key).
+    First confirms the PaymentIntent with Stripe using a test card, then calls
+    the orchestrator confirm endpoint to verify and finalize."""
     try:
         assert ctx["saga_id"] is not None, "No saga_id from previous test"
+        assert ctx["payment_intent_id"] is not None, "No payment_intent_id from previous test"
+        assert STRIPE_SECRET_KEY, "STRIPE_SECRET_KEY not set in .env"
 
+        # Simulate client-side payment: confirm the PaymentIntent with a test card
+        stripe_resp = requests.post(
+            f"https://api.stripe.com/v1/payment_intents/{ctx['payment_intent_id']}/confirm",
+            data={
+                "payment_method": "pm_card_visa",
+                "return_url": "https://example.com/return"
+            },
+            auth=(STRIPE_SECRET_KEY, ''),
+            timeout=15
+        )
+        assert stripe_resp.status_code == 200, \
+            f"Stripe confirm failed: {stripe_resp.status_code} {stripe_resp.text[:200]}"
+
+        # Now call orchestrator confirm -- payment should verify as succeeded
         payload = {
             "saga_id": ctx["saga_id"],
             "payment_intent_id": ctx["payment_intent_id"]

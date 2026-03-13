@@ -10,8 +10,21 @@ Tests run in order -- later tests depend on state from earlier tests.
 """
 
 import sys
+import os
 import time
 import requests
+
+# Load .env for STRIPE_SECRET_KEY (needed to confirm PaymentIntent in tests)
+env_path = os.path.join(os.path.dirname(__file__), '..', '.env')
+if os.path.exists(env_path):
+    with open(env_path) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#') and '=' in line:
+                key, val = line.split('=', 1)
+                os.environ.setdefault(key.strip(), val.strip())
+
+STRIPE_SECRET_KEY = os.environ.get('STRIPE_SECRET_KEY', '')
 
 TICKET_URL = "http://localhost:5006"
 ORCHESTRATOR_URL = "http://localhost:5010"
@@ -73,7 +86,25 @@ def ensure_confirmed_booking():
         booking_id = result["booking_id"]
         payment_intent_id = result.get("payment_intent_id")
 
-        # Confirm booking
+        # Simulate client-side payment: confirm PaymentIntent with test card
+        if payment_intent_id and STRIPE_SECRET_KEY:
+            stripe_resp = requests.post(
+                f"https://api.stripe.com/v1/payment_intents/{payment_intent_id}/confirm",
+                data={
+                    "payment_method": "pm_card_visa",
+                    "return_url": "https://example.com/return"
+                },
+                auth=(STRIPE_SECRET_KEY, ''),
+                timeout=15
+            )
+            if stripe_resp.status_code != 200:
+                print(f"  WARNING: Could not confirm Stripe payment: {stripe_resp.status_code}")
+                return None
+        else:
+            print("  WARNING: No payment_intent_id or STRIPE_SECRET_KEY for payment confirmation")
+            return None
+
+        # Confirm booking via orchestrator
         confirm_payload = {
             "saga_id": saga_id,
             "payment_intent_id": payment_intent_id

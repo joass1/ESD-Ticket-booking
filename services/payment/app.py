@@ -187,7 +187,8 @@ def get_transaction_by_booking(booking_id):
     """Retrieve transaction by booking_id for status checks."""
     txn = db.session.execute(
         db.select(Transaction).where(Transaction.booking_id == booking_id)
-    ).scalar_one_or_none()
+        .order_by(Transaction.created_at.desc())
+    ).scalars().first()
 
     if not txn:
         return error("Transaction not found", 404)
