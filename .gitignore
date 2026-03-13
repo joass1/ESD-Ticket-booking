@@ -1,1 +1,14 @@
 .planning/
+.env
+__pycache__/
+*.pyc
+*.pyo
+mysql_data/
+rabbitmq_data/
+.DS_Store
+*.egg-info/
+dist/
+build/
+.vscode/
+.idea/
+node_modules/

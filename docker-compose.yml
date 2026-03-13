@@ -1,0 +1,363 @@
+services:
+  # ============================================
+  # Infrastructure Services
+  # ============================================
+
+  mysql:
+    image: mysql:8.0
+    container_name: mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-guest}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 40s
+
+  redis:
+    image: redis:7
+    container_name: redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  kong:
+    image: kong:3.6
+    container_name: kong
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /etc/kong/kong.yml
+      KONG_PROXY_LISTEN: "0.0.0.0:8000"
+      KONG_ADMIN_LISTEN: "0.0.0.0:8001"
+    ports:
+      - "8000:8000"
+      - "8001:8001"
+    volumes:
+      - ./kong/kong.yml:/etc/kong/kong.yml
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    depends_on:
+      event:
+        condition: service_healthy
+      booking:
+        condition: service_healthy
+      seat:
+        condition: service_healthy
+      payment:
+        condition: service_healthy
+      notification:
+        condition: service_healthy
+      ticket:
+        condition: service_healthy
+      waitlist:
+        condition: service_healthy
+      charging:
+        condition: service_healthy
+      booking_orchestrator:
+        condition: service_healthy
+
+  # ============================================
+  # Microservices
+  # ============================================
+
+  event:
+    build:
+      context: .
+      dockerfile: services/event/Dockerfile
+    container_name: event
+    environment:
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_USER: root
+      DB_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      DB_NAME: event_db
+      RABBITMQ_HOST: rabbitmq
+      PORT: "5001"
+    ports:
+      - "5001:5001"
+    volumes:
+      - ./shared:/app/shared
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5001/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  booking:
+    build:
+      context: .
+      dockerfile: services/booking/Dockerfile
+    container_name: booking
+    environment:
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_USER: root
+      DB_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      DB_NAME: booking_db
+      RABBITMQ_HOST: rabbitmq
+      PORT: "5002"
+    ports:
+      - "5002:5002"
+    volumes:
+      - ./shared:/app/shared
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5002/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  seat:
+    build:
+      context: .
+      dockerfile: services/seat/Dockerfile
+    container_name: seat
+    environment:
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_USER: root
+      DB_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      DB_NAME: seat_db
+      RABBITMQ_HOST: rabbitmq
+      REDIS_HOST: redis
+      PORT: "5003"
+    ports:
+      - "5003:5003"
+    volumes:
+      - ./shared:/app/shared
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5003/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  payment:
+    build:
+      context: .
+      dockerfile: services/payment/Dockerfile
+    container_name: payment
+    environment:
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_USER: root
+      DB_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      DB_NAME: payment_db
+      RABBITMQ_HOST: rabbitmq
+      PORT: "5004"
+    ports:
+      - "5004:5004"
+    volumes:
+      - ./shared:/app/shared
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5004/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  notification:
+    build:
+      context: .
+      dockerfile: services/notification/Dockerfile
+    container_name: notification
+    environment:
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_USER: root
+      DB_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      DB_NAME: notification_db
+      RABBITMQ_HOST: rabbitmq
+      PORT: "5005"
+    ports:
+      - "5005:5005"
+    volumes:
+      - ./shared:/app/shared
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5005/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  ticket:
+    build:
+      context: .
+      dockerfile: services/ticket/Dockerfile
+    container_name: ticket
+    environment:
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_USER: root
+      DB_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      DB_NAME: ticket_db
+      RABBITMQ_HOST: rabbitmq
+      PORT: "5006"
+    ports:
+      - "5006:5006"
+    volumes:
+      - ./shared:/app/shared
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5006/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  waitlist:
+    build:
+      context: .
+      dockerfile: services/waitlist/Dockerfile
+    container_name: waitlist
+    environment:
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_USER: root
+      DB_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      DB_NAME: waitlist_db
+      RABBITMQ_HOST: rabbitmq
+      REDIS_HOST: redis
+      PORT: "5007"
+    ports:
+      - "5007:5007"
+    volumes:
+      - ./shared:/app/shared
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5007/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  charging:
+    build:
+      context: .
+      dockerfile: services/charging/Dockerfile
+    container_name: charging
+    environment:
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_USER: root
+      DB_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      DB_NAME: charging_db
+      RABBITMQ_HOST: rabbitmq
+      PORT: "5008"
+    ports:
+      - "5008:5008"
+    volumes:
+      - ./shared:/app/shared
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5008/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  booking_orchestrator:
+    build:
+      context: .
+      dockerfile: services/booking_orchestrator/Dockerfile
+    container_name: booking_orchestrator
+    environment:
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_USER: root
+      DB_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      DB_NAME: saga_log_db
+      RABBITMQ_HOST: rabbitmq
+      PORT: "5010"
+    ports:
+      - "5010:5010"
+    volumes:
+      - ./shared:/app/shared
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5010/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+# ============================================
+# Named Volumes
+# ============================================
+
+volumes:
+  mysql_data:
+  rabbitmq_data:
