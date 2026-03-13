@@ -94,7 +94,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     amount DECIMAL(10, 2) NOT NULL,
     currency VARCHAR(3) DEFAULT 'SGD',
     stripe_payment_intent_id VARCHAR(255),
-    status ENUM('pending', 'succeeded', 'failed', 'refunded') DEFAULT 'pending',
+    status ENUM('pending', 'succeeded', 'failed', 'refunded', 'refund_failed') DEFAULT 'pending',
     refund_amount DECIMAL(10, 2) NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

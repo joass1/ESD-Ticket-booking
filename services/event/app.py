@@ -2,10 +2,12 @@ import sys
 sys.path.insert(0, '/app')
 
 import os
+import json
 from flask import Flask, request
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from shared.response import success, error
+from shared.amqp_lib import connect_with_retry, setup_exchange, publish_message
 from datetime import datetime
 from decimal import Decimal
 
@@ -29,6 +31,28 @@ app.config['SQLALCHEMY_POOL_PRE_PING'] = True
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
+
+
+# ============================================
+# AMQP Publisher (dedicated connection, lazy reconnect)
+# ============================================
+
+amqp_channel = None
+
+
+def publish_event_lifecycle(routing_key, payload):
+    """Publish an event lifecycle message to event_lifecycle exchange."""
+    global amqp_channel
+    try:
+        if amqp_channel is None or amqp_channel.is_closed:
+            conn = connect_with_retry()
+            amqp_channel = conn.channel()
+            setup_exchange(amqp_channel, 'event_lifecycle', 'topic')
+        publish_message(amqp_channel, 'event_lifecycle', routing_key, json.dumps(payload))
+        print(f"[Event] Published {routing_key}")
+    except Exception as e:
+        print(f"[Event] Failed to publish {routing_key}: {e}")
+        amqp_channel = None
 
 
 # ============================================
@@ -187,6 +211,34 @@ def update_event(event_id):
     except Exception as e:
         db.session.rollback()
         return error(f"Failed to update event: {str(e)}", 500)
+
+
+@app.route('/events/<int:event_id>/cancel', methods=['POST'])
+def cancel_event(event_id):
+    """EVNT-03: Cancel an event and publish event.cancelled to fan-out consumers."""
+    event = db.session.execute(
+        db.select(Event).where(Event.event_id == event_id)
+    ).scalar_one_or_none()
+
+    if not event:
+        return error("Event not found", 404)
+
+    if event.status not in ('upcoming', 'ongoing'):
+        return error(f"Event cannot be cancelled (status: {event.status})", 409)
+
+    try:
+        event.status = 'cancelled'
+        db.session.commit()
+
+        publish_event_lifecycle(f'event.cancelled.{event_id}', {
+            'event_id': event_id,
+            'event_name': event.name
+        })
+
+        return success({'event_id': event_id, 'status': 'cancelled'})
+    except Exception as e:
+        db.session.rollback()
+        return error(f"Failed to cancel event: {str(e)}", 500)
 
 
 if __name__ == '__main__':
