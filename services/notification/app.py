@@ -165,17 +165,17 @@ def get_email_template(event_type, data):
 
     elif event_type == 'refund.completed':
         booking_id = data.get('booking_id', 'N/A')
-        amount = data.get('amount', 'N/A')
-        fee = data.get('fee', 0)
-        net_refund = data.get('net_refund', amount)
+        original_amount = data.get('original_amount', 'N/A')
+        service_fee = data.get('service_fee', 0)
+        refund_amount = data.get('refund_amount', original_amount)
         subject = "Refund Processed"
         body = f"""
         <h2>Refund Processed</h2>
         <p>Your refund for booking <strong>#{booking_id}</strong> has been processed.</p>
         <ul>
-            <li><strong>Original Amount:</strong> ${amount}</li>
-            <li><strong>Processing Fee:</strong> ${fee}</li>
-            <li><strong>Net Refund:</strong> ${net_refund}</li>
+            <li><strong>Original Amount:</strong> ${original_amount}</li>
+            <li><strong>Processing Fee (10%):</strong> ${service_fee}</li>
+            <li><strong>Net Refund:</strong> ${refund_amount}</li>
         </ul>
         <p>Please allow 5-10 business days for the refund to appear on your statement.</p>
         """
@@ -333,19 +333,32 @@ def handle_waitlist_event(ch, method, properties, body):
 
 
 def handle_lifecycle_event(ch, method, properties, body):
-    """Handle event.cancelled (NOTF-04) - Phase 5 stub."""
+    """Handle event.cancelled (NOTF-04).
+    The event.cancelled payload only contains event_id and event_name (no email).
+    Per-user cancellation notifications arrive via the refund.completed chain which includes email.
+    This handler logs the cancellation event for audit purposes.
+    """
     try:
         data = json.loads(body)
-        event_type = 'event.cancelled'
-        email_addr = data.get('email')
-        user_id = data.get('user_id')
+        event_id = data.get('event_id', 'N/A')
+        event_name = data.get('event_name', 'Unknown')
 
-        print(f"[NOTIFICATION] Received lifecycle event: {data}")
+        print(f"[NOTIFICATION] Event cancelled: id={event_id}, name={event_name}")
 
         with app.app_context():
-            if email_addr:
-                subject, html_body = get_email_template(event_type, data)
-                send_email(email_addr, subject, html_body, event_type, user_id)
+            # Log the cancellation event (no email to send - payload has no user info)
+            log = NotificationLog(
+                user_id=None,
+                email=None,
+                channel='email',
+                event_type='event.cancelled',
+                subject=f"Event Cancelled - {event_name}",
+                body=f"Event {event_id} ({event_name}) has been cancelled. "
+                     f"Individual refund notifications sent via refund.completed chain.",
+                status='sent'
+            )
+            db.session.add(log)
+            db.session.commit()
 
     except Exception as e:
         print(f"[NOTIFICATION] Error handling lifecycle event: {e}")
@@ -433,10 +446,9 @@ def start_all_consumers():
 
     threading.Thread(
         target=lambda: start_consumer(
-            'notification_refund_queue', 'refund_direct',
+            'notification_refund_queue', 'refund_topic',
             ['refund.completed'],
-            handle_refund_event,
-            exchange_type='direct'
+            handle_refund_event
         ), daemon=True
     ).start()
 
