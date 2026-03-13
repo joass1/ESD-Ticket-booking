@@ -2,10 +2,12 @@ import sys
 sys.path.insert(0, '/app')
 
 import os
-from flask import Flask
+from flask import Flask, request
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from shared.response import success, error
+from datetime import datetime
+from decimal import Decimal
 
 app = Flask(__name__)
 CORS(app)
@@ -29,6 +31,46 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
 
+# ============================================
+# Model
+# ============================================
+
+class Event(db.Model):
+    __tablename__ = 'events'
+
+    event_id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(255), nullable=False)
+    description = db.Column(db.Text)
+    category = db.Column(db.String(100))
+    event_date = db.Column(db.DateTime, nullable=False)
+    venue = db.Column(db.String(255))
+    status = db.Column(db.String(20), default='upcoming')
+    total_seats = db.Column(db.Integer, nullable=False)
+    available_seats = db.Column(db.Integer, nullable=False)
+    price_min = db.Column(db.Numeric(10, 2))
+    price_max = db.Column(db.Numeric(10, 2))
+    image_url = db.Column(db.String(500))
+    created_at = db.Column(db.DateTime, server_default=db.func.current_timestamp())
+    updated_at = db.Column(db.DateTime, server_default=db.func.current_timestamp(),
+                           onupdate=db.func.current_timestamp())
+
+    def to_dict(self):
+        d = {}
+        for col in self.__table__.columns:
+            val = getattr(self, col.name)
+            if isinstance(val, datetime):
+                d[col.name] = val.isoformat()
+            elif isinstance(val, Decimal):
+                d[col.name] = float(val)
+            else:
+                d[col.name] = val
+        return d
+
+
+# ============================================
+# Routes
+# ============================================
+
 @app.route('/health')
 def health():
     try:
@@ -36,6 +78,115 @@ def health():
         return success({"status": "healthy"})
     except Exception as e:
         return error(f"Database unreachable: {str(e)}", 503)
+
+
+@app.route('/events')
+def get_events():
+    """List events with optional filters: status, category, date_from, date_to."""
+    query = db.select(Event)
+
+    # Apply filters from query params
+    status = request.args.get('status')
+    if status:
+        query = query.where(Event.status == status)
+
+    category = request.args.get('category')
+    if category:
+        query = query.where(Event.category == category)
+
+    date_from = request.args.get('date_from')
+    if date_from:
+        query = query.where(Event.event_date >= date_from)
+
+    date_to = request.args.get('date_to')
+    if date_to:
+        query = query.where(Event.event_date <= date_to)
+
+    # Default sort by event_date ascending
+    query = query.order_by(Event.event_date.asc())
+
+    events = db.session.execute(query).scalars().all()
+    return success([e.to_dict() for e in events])
+
+
+@app.route('/events/<int:event_id>')
+def get_event(event_id):
+    """Get a single event by ID."""
+    event = db.session.execute(
+        db.select(Event).where(Event.event_id == event_id)
+    ).scalar_one_or_none()
+
+    if not event:
+        return error("Event not found", 404)
+
+    return success(event.to_dict())
+
+
+@app.route('/events', methods=['POST'])
+def create_event():
+    """Admin create event. Required fields: name, event_date, total_seats."""
+    data = request.get_json()
+    if not data:
+        return error("Invalid JSON", 400)
+
+    required = ['name', 'event_date', 'total_seats']
+    for field in required:
+        if field not in data:
+            return error(f"Missing required field: {field}", 400)
+
+    event = Event(
+        name=data['name'],
+        description=data.get('description'),
+        category=data.get('category'),
+        event_date=data['event_date'],
+        venue=data.get('venue'),
+        status=data.get('status', 'upcoming'),
+        total_seats=data['total_seats'],
+        available_seats=data['total_seats'],
+        price_min=data.get('price_min'),
+        price_max=data.get('price_max'),
+        image_url=data.get('image_url')
+    )
+
+    try:
+        db.session.add(event)
+        db.session.commit()
+        return success(event.to_dict(), 201)
+    except Exception as e:
+        db.session.rollback()
+        return error(f"Failed to create event: {str(e)}", 500)
+
+
+@app.route('/events/<int:event_id>', methods=['PUT'])
+def update_event(event_id):
+    """Admin update event. Update only provided fields."""
+    event = db.session.execute(
+        db.select(Event).where(Event.event_id == event_id)
+    ).scalar_one_or_none()
+
+    if not event:
+        return error("Event not found", 404)
+
+    data = request.get_json()
+    if not data:
+        return error("Invalid JSON", 400)
+
+    # Update only provided fields
+    updatable_fields = [
+        'name', 'description', 'category', 'event_date', 'venue',
+        'status', 'total_seats', 'available_seats', 'price_min',
+        'price_max', 'image_url'
+    ]
+    for field in updatable_fields:
+        if field in data:
+            setattr(event, field, data[field])
+
+    try:
+        db.session.commit()
+        return success(event.to_dict())
+    except Exception as e:
+        db.session.rollback()
+        return error(f"Failed to update event: {str(e)}", 500)
 
 
 if __name__ == '__main__':
