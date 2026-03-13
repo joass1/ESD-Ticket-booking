@@ -1,0 +1,81 @@
+_format_version: "3.0"
+_transform: true
+
+services:
+  - name: event-service
+    url: http://event:5001
+    routes:
+      - name: event-routes
+        paths:
+          - /api/events
+        strip_path: false
+
+  - name: booking-service
+    url: http://booking:5002
+    routes:
+      - name: booking-routes
+        paths:
+          - /api/bookings
+        strip_path: false
+
+  - name: seat-service
+    url: http://seat:5003
+    routes:
+      - name: seat-routes
+        paths:
+          - /api/seats
+        strip_path: false
+
+  - name: payment-service
+    url: http://payment:5004
+    routes:
+      - name: payment-routes
+        paths:
+          - /api/payments
+        strip_path: false
+
+  - name: notification-service
+    url: http://notification:5005
+    routes:
+      - name: notification-routes
+        paths:
+          - /api/notifications
+        strip_path: false
+
+  - name: ticket-service
+    url: http://ticket:5006
+    routes:
+      - name: ticket-routes
+        paths:
+          - /api/tickets
+        strip_path: false
+
+  - name: waitlist-service
+    url: http://waitlist:5007
+    routes:
+      - name: waitlist-routes
+        paths:
+          - /api/waitlist
+        strip_path: false
+
+  - name: charging-service
+    url: http://charging:5008
+    routes:
+      - name: charging-routes
+        paths:
+          - /api/charging
+        strip_path: false
+
+  - name: orchestrator-service
+    url: http://booking_orchestrator:5010
+    routes:
+      - name: orchestrator-routes
+        paths:
+          - /api/orchestrator
+        strip_path: false
+
+plugins:
+  - name: rate-limiting
+    config:
+      second: 10
+      policy: local
