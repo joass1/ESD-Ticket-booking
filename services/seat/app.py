@@ -2,10 +2,13 @@ import sys
 sys.path.insert(0, '/app')
 
 import os
+import json
+import threading
 from flask import Flask, request, jsonify, make_response
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from shared.response import success, error
+from shared.amqp_lib import connect_with_retry, setup_exchange, publish_message, start_consumer, run_with_amqp
 from datetime import datetime
 from decimal import Decimal
 import redis
@@ -37,6 +40,25 @@ redis_client = redis.Redis(
     port=int(os.environ.get('REDIS_PORT', 6379)),
     decode_responses=True
 )
+
+
+# AMQP connection for publishing (dedicated connection, separate from consumer threads)
+amqp_channel = None
+
+
+def publish_seat_event(routing_key, payload):
+    """Publish a seat event to seat_topic exchange."""
+    global amqp_channel
+    try:
+        if amqp_channel is None or amqp_channel.is_closed:
+            conn = connect_with_retry()
+            amqp_channel = conn.channel()
+            setup_exchange(amqp_channel, 'seat_topic', 'topic')
+        publish_message(amqp_channel, 'seat_topic', routing_key, json.dumps(payload))
+        print(f"[Seat] Published {routing_key}")
+    except Exception as e:
+        print(f"[Seat] Failed to publish {routing_key}: {e}")
+        amqp_channel = None
 
 
 # ============================================
@@ -380,6 +402,16 @@ def release_seat():
 
         db.session.commit()
 
+        # SEAT-08: Publish seat.released event for waitlist promotion
+        publish_seat_event(f'seat.released.{event_id}', {
+            'event_id': event_id,
+            'seat_id': seat_id,
+            'section': section.name if section else None,
+            'section_id': section_id,
+            'seat_number': seat.seat_number,
+            'source': 'seat_release'
+        })
+
         return success({'seat_id': seat_id, 'status': 'released'})
 
     except Exception as e:
@@ -429,5 +461,95 @@ def confirm_seat():
         return error(f"Confirmation failed: {str(e)}", 500)
 
 
+# ============================================
+# AMQP Consumer: seat.reserve.request
+# ============================================
+
+def handle_reserve_request(ch, method, properties, body):
+    """Handle seat reservation requests from Waitlist Service via AMQP."""
+    try:
+        msg = json.loads(body)
+        event_id = msg['event_id']
+        seat_id = msg['seat_id']
+        user_id = msg['user_id']
+        waitlist_entry_id = msg.get('waitlist_entry_id')
+
+        print(f"[Seat] Reserve request: event={event_id} seat={seat_id} user={user_id}")
+
+        with app.app_context():
+            # Try to acquire Redis lock
+            lock_acquired = acquire_seat_lock(event_id, seat_id, user_id)
+            if not lock_acquired:
+                publish_seat_event('seat.reserve.failed', {
+                    'waitlist_entry_id': waitlist_entry_id,
+                    'event_id': event_id,
+                    'seat_id': seat_id,
+                    'reason': 'lock_unavailable'
+                })
+                return
+
+            try:
+                seat = db.session.query(Seat).filter_by(
+                    seat_id=seat_id, event_id=event_id
+                ).with_for_update().first()
+
+                if seat and seat.status == 'available':
+                    seat.status = 'reserved'
+                    seat.reserved_by = str(user_id)
+                    seat.reserved_at = datetime.utcnow()
+
+                    section = db.session.query(Section).filter_by(
+                        section_id=seat.section_id, event_id=event_id
+                    ).with_for_update().first()
+
+                    if section and section.available_seats > 0:
+                        section.available_seats -= 1
+
+                    db.session.commit()
+
+                    publish_seat_event('seat.reserve.confirmed', {
+                        'waitlist_entry_id': waitlist_entry_id,
+                        'event_id': event_id,
+                        'seat_id': seat_id,
+                        'user_id': user_id,
+                        'section_price': float(section.price) if section else None
+                    })
+                    print(f"[Seat] Reserve confirmed: seat={seat_id}")
+                else:
+                    db.session.rollback()
+                    remove_seat_lock(event_id, seat_id)
+                    publish_seat_event('seat.reserve.failed', {
+                        'waitlist_entry_id': waitlist_entry_id,
+                        'event_id': event_id,
+                        'seat_id': seat_id,
+                        'reason': 'seat_unavailable'
+                    })
+                    print(f"[Seat] Reserve failed: seat={seat_id} unavailable")
+            except Exception as e:
+                db.session.rollback()
+                remove_seat_lock(event_id, seat_id)
+                publish_seat_event('seat.reserve.failed', {
+                    'waitlist_entry_id': waitlist_entry_id,
+                    'event_id': event_id,
+                    'seat_id': seat_id,
+                    'reason': str(e)
+                })
+                print(f"[Seat] Reserve error: {e}")
+    except Exception as e:
+        print(f"[Seat] Error handling reserve request: {e}")
+    finally:
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+
+
+def start_seat_consumers():
+    """Start AMQP consumer for seat reserve requests."""
+    start_consumer(
+        queue_name='seat_reserve_queue',
+        exchange_name='seat_topic',
+        routing_keys=['seat.reserve.request'],
+        callback=handle_reserve_request
+    )
+
+
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5003)), debug=False)
+    run_with_amqp(app, int(os.environ.get('PORT', 5003)), start_seat_consumers)
