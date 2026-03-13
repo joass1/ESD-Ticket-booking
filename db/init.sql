@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS bookings (
     seat_id INT NOT NULL,
     email VARCHAR(255) NOT NULL,
     amount DECIMAL(10, 2) NOT NULL,
-    status ENUM('pending', 'confirmed', 'cancelled', 'pending_refund', 'refunded') DEFAULT 'pending',
+    status ENUM('pending', 'confirmed', 'cancelled', 'failed', 'expired', 'pending_refund', 'refunded') DEFAULT 'pending',
     payment_intent_id VARCHAR(255),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
