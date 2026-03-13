@@ -224,6 +224,11 @@ services:
       DB_NAME: notification_db
       RABBITMQ_HOST: rabbitmq
       PORT: "5005"
+      GMAIL_USER: ${GMAIL_USER:-}
+      GMAIL_APP_PASSWORD: ${GMAIL_APP_PASSWORD:-}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+      TWILIO_PHONE_NUMBER: ${TWILIO_PHONE_NUMBER:-}
     ports:
       - "5005:5005"
     volumes:
@@ -291,6 +296,8 @@ services:
       mysql:
         condition: service_healthy
       rabbitmq:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5007/health')\""]
