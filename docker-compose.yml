@@ -193,6 +193,7 @@ services:
       DB_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
       DB_NAME: payment_db
       RABBITMQ_HOST: rabbitmq
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
       PORT: "5004"
     ports:
       - "5004:5004"
