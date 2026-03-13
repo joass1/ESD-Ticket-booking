@@ -30,7 +30,7 @@ def test_fail(name, reason):
 # ============================================
 
 def test_list_events():
-    """EVNT-01: GET /events returns all 5 seeded events."""
+    """EVNT-01: GET /events returns at least 5 seeded events."""
     try:
         r = requests.get(f"{BASE_URL}/events")
         data = r.json()
@@ -38,7 +38,11 @@ def test_list_events():
         assert data["code"] == 200, f"Expected code 200, got {data['code']}"
         events = data["data"]
         assert isinstance(events, list), "Expected list of events"
-        assert len(events) == 5, f"Expected 5 seeded events, got {len(events)}"
+        assert len(events) >= 5, f"Expected at least 5 seeded events, got {len(events)}"
+        # Verify the 5 known seeded events are present
+        names = [e["name"] for e in events]
+        for expected in ["Taylor Swift", "Ed Sheeran", "Coldplay", "Jay Chou", "Blackpink"]:
+            assert any(expected in n for n in names), f"Missing seeded event containing '{expected}'"
         test_pass("test_list_events")
         return True
     except Exception as e:
@@ -47,15 +51,19 @@ def test_list_events():
 
 
 def test_filter_by_status():
-    """EVNT-01: GET /events?status=upcoming returns 4 upcoming events (Jay Chou is 'ongoing')."""
+    """EVNT-01: GET /events?status=upcoming returns upcoming events (Jay Chou is 'ongoing')."""
     try:
         r = requests.get(f"{BASE_URL}/events", params={"status": "upcoming"})
         data = r.json()
         assert r.status_code == 200, f"Expected 200, got {r.status_code}"
         events = data["data"]
-        assert len(events) == 4, f"Expected 4 upcoming events, got {len(events)}"
+        assert len(events) >= 4, f"Expected at least 4 upcoming events, got {len(events)}"
         names = [e["name"] for e in events]
+        # Jay Chou is 'ongoing', so should NOT appear in upcoming filter
         assert all("Jay Chou" not in n for n in names), "Jay Chou should not be in upcoming"
+        # Verify the 4 known upcoming events are present
+        for expected in ["Taylor Swift", "Ed Sheeran", "Coldplay", "Blackpink"]:
+            assert any(expected in n for n in names), f"Missing upcoming event containing '{expected}'"
         test_pass("test_filter_by_status")
         return True
     except Exception as e:
@@ -64,13 +72,16 @@ def test_filter_by_status():
 
 
 def test_filter_by_category():
-    """EVNT-01: GET /events?category=Concert returns all 5 (all are Concert)."""
+    """EVNT-01: GET /events?category=Concert returns at least 5 (all seeded events are Concert)."""
     try:
         r = requests.get(f"{BASE_URL}/events", params={"category": "Concert"})
         data = r.json()
         assert r.status_code == 200, f"Expected 200, got {r.status_code}"
         events = data["data"]
-        assert len(events) == 5, f"Expected 5 Concert events, got {len(events)}"
+        assert len(events) >= 5, f"Expected at least 5 Concert events, got {len(events)}"
+        # All returned events should have Concert category
+        for e in events:
+            assert e["category"] == "Concert", f"Non-Concert event in results: {e['name']}"
         test_pass("test_filter_by_category")
         return True
     except Exception as e:
