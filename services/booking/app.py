@@ -2,10 +2,13 @@ import sys
 sys.path.insert(0, '/app')
 
 import os
+import json
+import threading
 from flask import Flask, request
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from shared.response import success, error
+from shared.amqp_lib import connect_with_retry, setup_exchange, publish_message, start_consumer
 from datetime import datetime
 from decimal import Decimal
 
@@ -29,6 +32,28 @@ app.config['SQLALCHEMY_POOL_PRE_PING'] = True
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
+
+
+# ============================================
+# AMQP Publisher (dedicated connection, lazy reconnect)
+# ============================================
+
+amqp_channel = None
+
+
+def publish_booking_event(routing_key, payload):
+    """Publish a booking event to booking_topic exchange."""
+    global amqp_channel
+    try:
+        if amqp_channel is None or amqp_channel.is_closed:
+            conn = connect_with_retry()
+            amqp_channel = conn.channel()
+            setup_exchange(amqp_channel, 'booking_topic', 'topic')
+        publish_message(amqp_channel, 'booking_topic', routing_key, json.dumps(payload))
+        print(f"[Booking] Published {routing_key}")
+    except Exception as e:
+        print(f"[Booking] Failed to publish {routing_key}: {e}")
+        amqp_channel = None
 
 
 # ============================================
@@ -184,5 +209,88 @@ def update_booking(booking_id):
         return error(f"Failed to update booking: {str(e)}", 500)
 
 
+# ============================================
+# AMQP Consumers
+# ============================================
+
+def handle_event_cancelled(ch, method, properties, body):
+    """Handle event.cancelled: update confirmed bookings to pending_refund and publish refund requests."""
+    try:
+        msg = json.loads(body)
+        event_id = msg['event_id']
+
+        print(f"[Booking] Event cancelled: event={event_id}")
+
+        with app.app_context():
+            bookings = Booking.query.filter_by(
+                event_id=event_id, status='confirmed'
+            ).all()
+
+            for booking in bookings:
+                booking.status = 'pending_refund'
+
+            db.session.commit()
+
+            for booking in bookings:
+                publish_booking_event('booking.refund.requested', {
+                    'booking_id': booking.booking_id,
+                    'user_id': booking.user_id,
+                    'email': booking.email,
+                    'amount': float(booking.amount),
+                    'event_id': event_id
+                })
+
+            print(f"[Booking] Updated {len(bookings)} bookings to pending_refund")
+
+    except Exception as e:
+        print(f"[Booking] Error handling event cancellation: {e}")
+    finally:
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+
+
+def handle_refund_completed(ch, method, properties, body):
+    """Handle refund.completed: update booking status to refunded."""
+    try:
+        msg = json.loads(body)
+        booking_id = msg['booking_id']
+
+        print(f"[Booking] Refund completed: booking={booking_id}")
+
+        with app.app_context():
+            booking = Booking.query.filter_by(
+                booking_id=booking_id, status='pending_refund'
+            ).first()
+
+            if booking:
+                booking.status = 'refunded'
+                db.session.commit()
+                print(f"[Booking] Booking {booking_id} marked as refunded")
+            else:
+                print(f"[Booking] Booking {booking_id} not found or not pending_refund")
+
+    except Exception as e:
+        print(f"[Booking] Error handling refund completed: {e}")
+    finally:
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+
+
+def start_booking_consumers():
+    """Start all AMQP consumers in separate daemon threads."""
+    threading.Thread(
+        target=lambda: start_consumer(
+            'booking_cancel_queue', 'event_lifecycle',
+            ['event.cancelled.*'], handle_event_cancelled
+        ), daemon=True
+    ).start()
+
+    threading.Thread(
+        target=lambda: start_consumer(
+            'booking_refund_complete_queue', 'refund_topic',
+            ['refund.completed'], handle_refund_completed
+        ), daemon=True
+    ).start()
+
+
 if __name__ == '__main__':
+    start_booking_consumers()
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5002)), debug=False)

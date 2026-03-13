@@ -195,6 +195,31 @@ def get_ticket_by_id(ticket_id):
 # AMQP consumer startup
 # ============================================
 
+def handle_event_cancelled(ch, method, properties, body):
+    """TICK-04: Bulk-invalidate all valid tickets when event is cancelled."""
+    try:
+        msg = json.loads(body)
+        event_id = msg['event_id']
+
+        print(f"[Ticket] Event cancelled: event={event_id}")
+
+        with app.app_context():
+            tickets = Ticket.query.filter_by(
+                event_id=event_id, status='valid'
+            ).all()
+
+            for ticket in tickets:
+                ticket.status = 'invalidated'
+
+            db.session.commit()
+            print(f"[Ticket] Invalidated {len(tickets)} tickets for event {event_id}")
+
+    except Exception as e:
+        print(f"[Ticket] Error handling event cancellation: {e}")
+    finally:
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+
+
 def start_amqp_consumer():
     """Start consuming booking.confirmed messages from booking_topic exchange."""
     start_consumer(
@@ -210,9 +235,15 @@ def start_amqp_consumer():
 # ============================================
 
 if __name__ == '__main__':
-    # Start AMQP consumer in daemon thread
-    consumer_thread = threading.Thread(target=start_amqp_consumer, daemon=True)
-    consumer_thread.start()
+    # Start AMQP consumers in daemon threads
+    threading.Thread(target=start_amqp_consumer, daemon=True).start()
+
+    threading.Thread(
+        target=lambda: start_consumer(
+            'ticket_cancel_queue', 'event_lifecycle',
+            ['event.cancelled.*'], handle_event_cancelled
+        ), daemon=True
+    ).start()
 
     # Use socketio.run() instead of app.run() for WebSocket support
     socketio.run(app, host='0.0.0.0', port=PORT, debug=False, allow_unsafe_werkzeug=True)

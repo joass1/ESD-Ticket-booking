@@ -541,15 +541,61 @@ def handle_reserve_request(ch, method, properties, body):
         ch.basic_ack(delivery_tag=method.delivery_tag)
 
 
+def handle_event_cancelled(ch, method, properties, body):
+    """SEAT-07: Bulk-reset all reserved/booked seats and clear Redis locks when event is cancelled."""
+    try:
+        msg = json.loads(body)
+        event_id = msg['event_id']
+
+        print(f"[Seat] Event cancelled: event={event_id}")
+
+        with app.app_context():
+            # Find all reserved/booked seats for this event
+            seats = Seat.query.filter(
+                Seat.event_id == event_id,
+                Seat.status.in_(['reserved', 'booked'])
+            ).all()
+
+            for seat in seats:
+                seat.status = 'available'
+                seat.reserved_by = None
+                seat.reserved_at = None
+                remove_seat_lock(event_id, seat.seat_id)
+
+            # Recalculate section availability
+            sections = Section.query.filter_by(event_id=event_id).all()
+            for section in sections:
+                available_count = Seat.query.filter_by(
+                    event_id=event_id, section_id=section.section_id, status='available'
+                ).count()
+                section.available_seats = available_count
+
+            db.session.commit()
+            print(f"[Seat] Reset {len(seats)} seats to available for event {event_id}")
+
+    except Exception as e:
+        print(f"[Seat] Error handling event cancellation: {e}")
+    finally:
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+
+
 def start_seat_consumers():
-    """Start AMQP consumer for seat reserve requests."""
-    start_consumer(
-        queue_name='seat_reserve_queue',
-        exchange_name='seat_topic',
-        routing_keys=['seat.reserve.request'],
-        callback=handle_reserve_request
-    )
+    """Start AMQP consumers for seat reserve requests and event cancellation."""
+    threading.Thread(
+        target=lambda: start_consumer(
+            'seat_reserve_queue', 'seat_topic',
+            ['seat.reserve.request'], handle_reserve_request
+        ), daemon=True
+    ).start()
+
+    threading.Thread(
+        target=lambda: start_consumer(
+            'seat_cancel_queue', 'event_lifecycle',
+            ['event.cancelled.*'], handle_event_cancelled
+        ), daemon=True
+    ).start()
 
 
 if __name__ == '__main__':
-    run_with_amqp(app, int(os.environ.get('PORT', 5003)), start_seat_consumers)
+    start_seat_consumers()
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5003)), debug=False)
