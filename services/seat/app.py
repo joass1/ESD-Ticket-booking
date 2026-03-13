@@ -243,6 +243,7 @@ def reserve_seat():
 
                     seat_dict = seat.to_dict()
                     seat_dict['auto_assigned'] = False
+                    seat_dict['section_price'] = float(section.price) if section else None
                     return success(seat_dict, 200)
                 else:
                     # Seat not available in MySQL (stale) -- release Redis lock, fall through
@@ -305,6 +306,7 @@ def reserve_seat():
                     seat_dict = candidate.to_dict()
                     seat_dict['auto_assigned'] = True
                     seat_dict['originally_requested'] = seat_id
+                    seat_dict['section_price'] = float(section.price) if section else None
                     return success(seat_dict, 200)
                 except Exception:
                     db.session.rollback()
