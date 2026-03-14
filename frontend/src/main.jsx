@@ -8,7 +8,7 @@ import NotFoundPage from './pages/NotFoundPage.jsx';
 import EventDetailPage from './pages/EventDetailPage.jsx';
 import WaitlistPage from './pages/WaitlistPage.jsx';
 import BookingHistoryPage from './pages/BookingHistoryPage.jsx';
-import { BookingPage } from './pages/PlaceholderPages.jsx';
+import BookingPage from './pages/BookingPage.jsx';
 
 const router = createBrowserRouter([
   {
