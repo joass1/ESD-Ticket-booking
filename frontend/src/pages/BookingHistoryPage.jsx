@@ -8,6 +8,7 @@ const STATUS_STYLES = {
   confirmed: { bg: 'bg-green-500/20', text: 'text-green-400', label: 'Confirmed' },
   pending: { bg: 'bg-yellow-500/20', text: 'text-yellow-400', label: 'Pending' },
   payment_pending: { bg: 'bg-orange-500/20', text: 'text-orange-400', label: 'Payment Pending' },
+  pending_refund: { bg: 'bg-orange-500/20', text: 'text-orange-400', label: 'Refund Processing' },
   refunded: { bg: 'bg-gray-500/20', text: 'text-gray-400', label: 'Refunded' },
   cancelled: { bg: 'bg-red-500/20', text: 'text-red-400', label: 'Cancelled' },
 };
@@ -25,6 +26,15 @@ function BookingCard({ booking }) {
   const [ticket, setTicket] = useState(null);
   const [showTicket, setShowTicket] = useState(false);
   const [ticketLoading, setTicketLoading] = useState(false);
+  const [refundInfo, setRefundInfo] = useState(null);
+
+  useEffect(() => {
+    if (booking.status === 'refunded' || booking.status === 'pending_refund') {
+      api(`/api/charging/booking/${booking.booking_id}`)
+        .then((data) => setRefundInfo(data))
+        .catch(() => setRefundInfo(null));
+    }
+  }, [booking.status, booking.booking_id]);
 
   const handleViewTicket = async () => {
     if (ticket) {
@@ -122,6 +132,31 @@ function BookingCard({ booking }) {
           </p>
           <p className="text-xs text-text-secondary">
             Status: {ticket.status || 'valid'}
+          </p>
+        </div>
+      )}
+
+      {(booking.status === 'refunded' || booking.status === 'pending_refund') && refundInfo && (
+        <div className="bg-bg-primary rounded-lg p-4 border border-white/10 space-y-2">
+          <p className="text-sm font-medium text-text-primary">Refund Breakdown</p>
+          <div className="grid grid-cols-3 gap-2 text-xs">
+            <div>
+              <p className="text-text-secondary">Original</p>
+              <p className="text-text-primary font-semibold">${Number(refundInfo.original_amount).toFixed(2)}</p>
+            </div>
+            <div>
+              <p className="text-text-secondary">Service Fee (10%)</p>
+              <p className="text-red-400 font-semibold">-${Number(refundInfo.service_fee).toFixed(2)}</p>
+            </div>
+            <div>
+              <p className="text-text-secondary">Refunded</p>
+              <p className="text-green-400 font-semibold">${Number(refundInfo.refund_amount).toFixed(2)}</p>
+            </div>
+          </div>
+          <p className="text-xs text-text-secondary">
+            {booking.status === 'refunded'
+              ? 'Refunded to your original payment method via Stripe.'
+              : 'Refund is being processed via Stripe.'}
           </p>
         </div>
       )}

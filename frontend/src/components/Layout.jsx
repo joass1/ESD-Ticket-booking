@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link, Outlet, useLocation } from 'react-router-dom';
 import { Ticket, CalendarDays, ClipboardList, ChevronDown } from 'lucide-react';
 
-const DEMO_USERS = ['user_001', 'user_002', 'user_003'];
+const DEMO_USERS = ['user_001', 'user_002', 'user_003', 'admin'];
 
 export default function Layout() {
   const [userId, setUserId] = useState(DEMO_USERS[0]);

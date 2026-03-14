@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
-import { CalendarDays, MapPin } from 'lucide-react';
+import { Link, useParams, useOutletContext } from 'react-router-dom';
+import { CalendarDays, MapPin, AlertTriangle } from 'lucide-react';
 import { api } from '../api/client.js';
 import VenueOverview from '../components/SeatMap/VenueOverview.jsx';
 import SectionGrid from '../components/SeatMap/SectionGrid.jsx';
@@ -8,12 +8,16 @@ import LoadingSpinner from '../components/ui/LoadingSpinner.jsx';
 
 export default function EventDetailPage() {
   const { eventId } = useParams();
+  const { userId } = useOutletContext();
+  const isAdmin = userId === 'admin';
   const [event, setEvent] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [view, setView] = useState('overview'); // 'overview' | 'section'
   const [selectedSection, setSelectedSection] = useState(null);
   const [waitlistPrompt, setWaitlistPrompt] = useState(null);
+  const [cancelConfirm, setCancelConfirm] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
 
   useEffect(() => {
     const fetchEvent = async () => {
@@ -45,6 +49,19 @@ export default function EventDetailPage() {
     setView('overview');
     setSelectedSection(null);
     setWaitlistPrompt(null);
+  };
+
+  const handleCancelEvent = async () => {
+    setCancelling(true);
+    try {
+      await api(`/api/events/${eventId}/cancel`, { method: 'POST' });
+      setEvent((prev) => ({ ...prev, status: 'cancelled' }));
+      setCancelConfirm(false);
+    } catch (err) {
+      setError(err.message || 'Failed to cancel event');
+    } finally {
+      setCancelling(false);
+    }
   };
 
   if (loading) return <LoadingSpinner />;
@@ -100,13 +117,66 @@ export default function EventDetailPage() {
               </span>
             )}
           </div>
-          {event.status && (
-            <span className="inline-block mt-3 px-3 py-1 rounded-full text-xs font-medium bg-accent/20 text-accent capitalize">
-              {event.status}
-            </span>
-          )}
+          <div className="flex items-center gap-3 mt-3">
+            {event.status && (
+              <span className={`inline-block px-3 py-1 rounded-full text-xs font-medium capitalize ${
+                event.status === 'cancelled'
+                  ? 'bg-red-500/20 text-red-400'
+                  : 'bg-accent/20 text-accent'
+              }`}>
+                {event.status}
+              </span>
+            )}
+
+            {isAdmin && event.status !== 'cancelled' && (
+              <button
+                onClick={() => setCancelConfirm(true)}
+                className="px-3 py-1 rounded-full text-xs font-medium bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors"
+              >
+                Cancel Event
+              </button>
+            )}
+          </div>
         </div>
       </div>
+
+      {/* Cancel confirmation modal */}
+      {cancelConfirm && (
+        <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-6 space-y-4">
+          <div className="flex items-start gap-3">
+            <AlertTriangle size={24} className="text-red-400 shrink-0 mt-0.5" />
+            <div>
+              <h3 className="text-text-primary font-semibold">Cancel this event?</h3>
+              <p className="text-text-secondary text-sm mt-1">
+                This will cancel all bookings and issue refunds (minus 10% service fee) to all ticket holders. This action cannot be undone.
+              </p>
+            </div>
+          </div>
+          <div className="flex gap-3 ml-9">
+            <button
+              onClick={handleCancelEvent}
+              disabled={cancelling}
+              className="px-5 py-2 bg-red-500 hover:bg-red-600 disabled:opacity-50 text-white rounded-lg text-sm font-medium transition-colors"
+            >
+              {cancelling ? 'Cancelling...' : 'Yes, Cancel Event'}
+            </button>
+            <button
+              onClick={() => setCancelConfirm(false)}
+              className="px-5 py-2 bg-white/5 hover:bg-white/10 text-text-secondary rounded-lg text-sm transition-colors"
+            >
+              Go Back
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Cancelled banner */}
+      {event.status === 'cancelled' && (
+        <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-5 text-center">
+          <p className="text-red-400 font-semibold">This event has been cancelled</p>
+          <p className="text-text-secondary text-sm mt-1">All bookings have been refunded (minus 10% service fee).</p>
+        </div>
+      )}
 
       {/* Waitlist prompt overlay */}
       {waitlistPrompt && (
