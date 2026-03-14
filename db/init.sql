@@ -219,11 +219,11 @@ CREATE TABLE IF NOT EXISTS saga_log (
 USE event_db;
 
 INSERT INTO events (name, description, category, event_date, venue, status, total_seats, available_seats, price_min, price_max, image_url) VALUES
-('Taylor Swift: The Eras Tour Singapore', 'Experience the magic of Taylor Swift live at the National Stadium. A journey through all musical eras.', 'Concert', '2026-06-15 19:30:00', 'National Stadium, Singapore', 'upcoming', 1500, 1500, 88.00, 388.00, NULL),
-('Ed Sheeran: Mathematics Tour', 'Ed Sheeran brings his Mathematics Tour to Singapore for an unforgettable night of music.', 'Concert', '2026-07-20 20:00:00', 'Singapore Indoor Stadium', 'upcoming', 800, 800, 128.00, 328.00, NULL),
-('Coldplay: Music of the Spheres', 'Coldplay returns to Singapore with their spectacular Music of the Spheres world tour.', 'Concert', '2026-08-10 19:00:00', 'National Stadium, Singapore', 'upcoming', 2000, 2000, 98.00, 358.00, NULL),
-('Jay Chou: Carnival World Tour', 'The King of Mandopop Jay Chou performs his greatest hits live in Singapore.', 'Concert', '2026-05-25 20:00:00', 'Singapore Indoor Stadium', 'ongoing', 1000, 1000, 108.00, 368.00, NULL),
-('Blackpink: Born Pink Finale', 'Blackpink concludes their world tour with a spectacular finale in Singapore.', 'Concert', '2026-09-05 19:30:00', 'National Stadium, Singapore', 'upcoming', 1800, 1800, 118.00, 388.00, NULL);
+('Taylor Swift: The Eras Tour Singapore', 'Experience the magic of Taylor Swift live at the National Stadium. A journey through all musical eras.', 'Concert', '2026-06-15 19:30:00', 'National Stadium, Singapore', 'upcoming', 1500, 1500, 88.00, 388.00, 'https://images.unsplash.com/photo-1540039155733-5bb30b53aa14?w=800'),
+('Ed Sheeran: Mathematics Tour', 'Ed Sheeran brings his Mathematics Tour to Singapore for an unforgettable night of music.', 'Concert', '2026-07-20 20:00:00', 'Singapore Indoor Stadium', 'upcoming', 800, 800, 128.00, 328.00, 'https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=800'),
+('Coldplay: Music of the Spheres', 'Coldplay returns to Singapore with their spectacular Music of the Spheres world tour.', 'Concert', '2026-08-10 19:00:00', 'National Stadium, Singapore', 'upcoming', 2000, 2000, 98.00, 358.00, 'https://images.unsplash.com/photo-1459749411175-04bf5292ceea?w=800'),
+('Jay Chou: Carnival World Tour', 'The King of Mandopop Jay Chou performs his greatest hits live in Singapore.', 'Concert', '2026-05-25 20:00:00', 'Singapore Indoor Stadium', 'ongoing', 1000, 1000, 108.00, 368.00, 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=800'),
+('Blackpink: Born Pink Finale', 'Blackpink concludes their world tour with a spectacular finale in Singapore.', 'Concert', '2026-09-05 19:30:00', 'National Stadium, Singapore', 'upcoming', 1800, 1800, 118.00, 388.00, 'https://images.unsplash.com/photo-1501281668745-f7f57925c3b4?w=800');
 
 -- ----- Sections and Seats -----
 USE seat_db;
