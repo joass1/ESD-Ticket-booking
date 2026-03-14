@@ -12,7 +12,7 @@ export default function useSocket(bookingId) {
     if (!bookingId) return;
 
     const socket = io(TICKET_SERVICE_URL, {
-      transports: ['websocket'],
+      transports: ['websocket', 'polling'],
     });
     socketRef.current = socket;
 

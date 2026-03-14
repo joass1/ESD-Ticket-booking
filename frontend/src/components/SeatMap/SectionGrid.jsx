@@ -38,19 +38,23 @@ export default function SectionGrid({ eventId, section, onBack }) {
   if (loading) return <LoadingSpinner />;
   if (error) return <p className="text-seat-taken text-center py-8">{error}</p>;
 
-  // Group seats by row
-  const rows = {};
-  seats.forEach((seat) => {
-    const row = seat.row_label || '?';
-    if (!rows[row]) rows[row] = [];
-    rows[row].push(seat);
+  // Normalize seats: extract display number from seat_number like "VIP-001"
+  const normalized = seats.map((seat) => {
+    const parts = String(seat.seat_number).split('-');
+    const num = parts.length > 1 ? parseInt(parts[1], 10) : parseInt(parts[0], 10) || 0;
+    return { ...seat, _num: num, price: seat.section_price ?? seat.price };
   });
 
-  // Sort rows alphabetically, seats by seat_number
-  const sortedRowKeys = Object.keys(rows).sort();
-  sortedRowKeys.forEach((key) => {
-    rows[key].sort((a, b) => a.seat_number - b.seat_number);
+  // Group into rows of 10
+  const sorted = [...normalized].sort((a, b) => a._num - b._num);
+  const rows = {};
+  sorted.forEach((seat, idx) => {
+    const rowLabel = String.fromCharCode(65 + Math.floor(idx / 10)); // A, B, C...
+    if (!rows[rowLabel]) rows[rowLabel] = [];
+    rows[rowLabel].push({ ...seat, row_label: rowLabel, display_num: (idx % 10) + 1 });
   });
+
+  const sortedRowKeys = Object.keys(rows).sort();
 
   const handleSeatClick = (seat) => {
     if (seat.status !== 'available') return;
@@ -120,7 +124,7 @@ export default function SectionGrid({ eventId, section, onBack }) {
                       key={seat.seat_id}
                       onClick={() => handleSeatClick(seat)}
                       disabled={!isAvailable && !isSelected}
-                      title={`Row ${seat.row_label} Seat ${seat.seat_number} - ${seat.status}`}
+                      title={`Row ${seat.row_label} Seat ${seat.display_num} - ${seat.status}`}
                       className="w-8 h-8 rounded-md flex items-center justify-center text-[10px] font-bold transition-all focus:outline-none focus:ring-2 focus:ring-accent"
                       style={{
                         backgroundColor: color,
@@ -128,7 +132,7 @@ export default function SectionGrid({ eventId, section, onBack }) {
                         cursor: isAvailable || isSelected ? 'pointer' : 'not-allowed',
                       }}
                     >
-                      {isSelected ? <Check size={14} className="text-black" /> : seat.seat_number}
+                      {isSelected ? <Check size={14} className="text-black" /> : seat.display_num}
                     </button>
                   );
                 })}
@@ -144,7 +148,7 @@ export default function SectionGrid({ eventId, section, onBack }) {
           <div className="text-sm text-text-primary">
             <span className="text-text-secondary">Selected: </span>
             <span className="font-semibold">
-              Row {selectedSeat.row_label}, Seat {selectedSeat.seat_number}
+              Row {selectedSeat.row_label}, Seat {selectedSeat.display_num}
             </span>
             <span className="text-text-secondary"> &middot; {section.name} &middot; </span>
             <span className="font-semibold text-accent">

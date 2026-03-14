@@ -12,6 +12,7 @@ export default function WaitlistPage() {
   const [event, setEvent] = useState(null);
   const [sections, setSections] = useState([]);
   const [selectedSection, setSelectedSection] = useState('');
+  const [email, setEmail] = useState('');
   const [loading, setLoading] = useState(true);
   const [joining, setJoining] = useState(false);
   const [error, setError] = useState(null);
@@ -29,9 +30,10 @@ export default function WaitlistPage() {
           api(`/api/seats/availability/${eventId}`),
         ]);
         setEvent(eventData);
-        const secs = Array.isArray(sectionData) ? sectionData : [];
-        setSections(secs);
-        if (secs.length > 0) setSelectedSection(secs[0].name);
+        const allSecs = sectionData?.sections || (Array.isArray(sectionData) ? sectionData : []);
+        const soldOut = allSecs.filter((s) => s.available_seats === 0);
+        setSections(soldOut);
+        if (soldOut.length > 0) setSelectedSection(soldOut[0].name);
       } catch (err) {
         setError(err.message || 'Failed to load event data');
       } finally {
@@ -77,7 +79,8 @@ export default function WaitlistPage() {
         body: JSON.stringify({
           user_id: userId,
           event_id: Number(eventId),
-          section_name: selectedSection,
+          email,
+          preferred_section: selectedSection,
         }),
       });
       // Immediately fetch position after joining
@@ -172,23 +175,38 @@ export default function WaitlistPage() {
           </p>
 
           <div>
+            <label className="block text-sm text-text-secondary mb-1.5">Email</label>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="your@email.com"
+              className="w-full bg-bg-primary text-text-primary placeholder-text-secondary border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-accent"
+            />
+          </div>
+
+          <div>
             <label className="block text-sm text-text-secondary mb-1.5">Preferred Section</label>
-            <select
-              value={selectedSection}
-              onChange={(e) => setSelectedSection(e.target.value)}
-              className="w-full bg-bg-primary text-text-primary border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-accent"
-            >
-              {sections.map((s) => (
-                <option key={s.section_id} value={s.name}>
-                  {s.name} — {s.available_seats} available — ${Number(s.price).toFixed(2)}
-                </option>
-              ))}
-            </select>
+            {sections.length === 0 ? (
+              <p className="text-text-secondary text-sm">No sold-out sections — all sections have available seats.</p>
+            ) : (
+              <select
+                value={selectedSection}
+                onChange={(e) => setSelectedSection(e.target.value)}
+                className="w-full bg-bg-primary text-text-primary border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-accent"
+              >
+                {sections.map((s) => (
+                  <option key={s.section_id} value={s.name}>
+                    {s.name} — Sold Out — ${Number(s.price).toFixed(2)}
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
 
           <button
             onClick={handleJoin}
-            disabled={joining || !selectedSection}
+            disabled={joining || !selectedSection || !email}
             className="w-full py-2.5 bg-accent hover:bg-accent-hover disabled:opacity-50 text-white rounded-lg font-medium transition-colors text-sm"
           >
             {joining ? 'Joining...' : 'Join Waitlist'}

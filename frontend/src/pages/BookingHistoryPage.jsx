@@ -106,9 +106,9 @@ function BookingCard({ booking }) {
 
       {showTicket && ticket && (
         <div className="bg-bg-primary rounded-lg p-4 border border-white/10 text-center space-y-2">
-          {ticket.qr_code_url ? (
+          {ticket.qr_code_base64 ? (
             <img
-              src={ticket.qr_code_url}
+              src={`data:image/png;base64,${ticket.qr_code_base64}`}
               alt="Ticket QR Code"
               className="w-32 h-32 mx-auto"
             />

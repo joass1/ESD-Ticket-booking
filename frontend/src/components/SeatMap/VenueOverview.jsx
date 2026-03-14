@@ -43,7 +43,8 @@ export default function VenueOverview({ eventId, onSectionSelect, onSoldOutClick
       setError(null);
       try {
         const data = await api(`/api/seats/availability/${eventId}`);
-        setSections(Array.isArray(data) ? data : []);
+        const list = data?.sections || (Array.isArray(data) ? data : []);
+        setSections(list);
       } catch (err) {
         setError(err.message || 'Failed to load seat availability');
       } finally {

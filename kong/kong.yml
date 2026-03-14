@@ -3,68 +3,68 @@ _transform: true
 
 services:
   - name: event-service
-    url: http://event:5001
+    url: http://event:5001/events
     routes:
       - name: event-routes
         paths:
           - /api/events
-        strip_path: false
+        strip_path: true
 
   - name: booking-service
-    url: http://booking:5002
+    url: http://booking:5002/bookings
     routes:
       - name: booking-routes
         paths:
           - /api/bookings
-        strip_path: false
+        strip_path: true
 
   - name: seat-service
-    url: http://seat:5003
+    url: http://seat:5003/seats
     routes:
       - name: seat-routes
         paths:
           - /api/seats
-        strip_path: false
+        strip_path: true
 
   - name: payment-service
-    url: http://payment:5004
+    url: http://payment:5004/payments
     routes:
       - name: payment-routes
         paths:
           - /api/payments
-        strip_path: false
+        strip_path: true
 
   - name: notification-service
-    url: http://notification:5005
+    url: http://notification:5005/notifications
     routes:
       - name: notification-routes
         paths:
           - /api/notifications
-        strip_path: false
+        strip_path: true
 
   - name: ticket-service
-    url: http://ticket:5006
+    url: http://ticket:5006/tickets
     routes:
       - name: ticket-routes
         paths:
           - /api/tickets
-        strip_path: false
+        strip_path: true
 
   - name: waitlist-service
-    url: http://waitlist:5007
+    url: http://waitlist:5007/waitlist
     routes:
       - name: waitlist-routes
         paths:
           - /api/waitlist
-        strip_path: false
+        strip_path: true
 
   - name: charging-service
-    url: http://charging:5008
+    url: http://charging:5008/fees
     routes:
       - name: charging-routes
         paths:
           - /api/charging
-        strip_path: false
+        strip_path: true
 
   - name: orchestrator-service
     url: http://booking_orchestrator:5010
@@ -72,7 +72,15 @@ services:
       - name: orchestrator-routes
         paths:
           - /api/orchestrator
-        strip_path: false
+        strip_path: true
+
+  - name: orchestrator-sagas-service
+    url: http://booking_orchestrator:5010/sagas
+    routes:
+      - name: orchestrator-sagas-routes
+        paths:
+          - /api/sagas
+        strip_path: true
 
 plugins:
   - name: rate-limiting
@@ -83,6 +91,7 @@ plugins:
     config:
       origins:
         - "http://localhost:5173"
+        - "http://localhost:5174"
       methods:
         - GET
         - POST

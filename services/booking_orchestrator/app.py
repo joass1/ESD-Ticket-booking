@@ -293,7 +293,8 @@ def initiate_booking():
         'seat_data': seat_data,
         'client_secret': payment_data.get('client_secret'),
         'payment_intent_id': saga.payment_intent_id,
-        'amount': float(section_price)
+        'amount': float(section_price),
+        'expires_at': saga.expires_at.isoformat() + 'Z'
     }, 201)
 
 

@@ -76,10 +76,10 @@ export default function EventsPage() {
       <div className="flex flex-wrap items-center gap-2">
         <SlidersHorizontal size={14} className="text-text-secondary" />
         <span className="text-xs text-text-secondary mr-1">Status:</span>
-        {STATUS_OPTIONS.map((s) => filterBtn(s, statusFilter === s, () => setStatusFilter(s)))}
+        {STATUS_OPTIONS.map((s) => <span key={s}>{filterBtn(s, statusFilter === s, () => setStatusFilter(s))}</span>)}
 
         <span className="text-xs text-text-secondary ml-4 mr-1">Category:</span>
-        {categories.map((c) => filterBtn(c, categoryFilter === c, () => setCategoryFilter(c)))}
+        {categories.map((c) => <span key={c}>{filterBtn(c, categoryFilter === c, () => setCategoryFilter(c))}</span>)}
       </div>
 
       {loading && <LoadingSpinner />}
