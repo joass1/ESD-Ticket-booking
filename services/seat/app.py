@@ -126,10 +126,17 @@ def _extract_seat_num(seat_number):
 def acquire_seat_lock(event_id, seat_id, user_id, ttl=600):
     """Acquire a distributed lock on a seat using Redis SET NX EX.
 
-    Returns True if lock acquired, None if already held by another user.
+    Returns True if lock acquired or already held by same user (idempotent),
+    None if held by another user.
     """
     key = f"seat:{event_id}:{seat_id}"
-    return redis_client.set(key, str(user_id), nx=True, ex=ttl)
+    if redis_client.set(key, str(user_id), nx=True, ex=ttl):
+        return True
+    current = redis_client.get(key)
+    if current and current == str(user_id):
+        redis_client.expire(key, ttl)
+        return True
+    return None
 
 
 def release_seat_lock(event_id, seat_id, user_id):
@@ -148,6 +155,25 @@ def release_seat_lock(event_id, seat_id, user_id):
 def remove_seat_lock(event_id, seat_id):
     """Unconditionally remove a seat lock (used for cleanup after MySQL failure)."""
     redis_client.delete(f"seat:{event_id}:{seat_id}")
+
+
+# ============================================
+# Availability Sync Helper (Bug 3)
+# ============================================
+
+def publish_availability_update(event_id):
+    """Query total available seats and publish to event service via AMQP."""
+    try:
+        with app.app_context():
+            total = db.session.query(
+                db.func.coalesce(db.func.sum(Section.available_seats), 0)
+            ).filter(Section.event_id == event_id).scalar()
+            publish_seat_event('seat.availability.updated', {
+                'event_id': event_id,
+                'available_seats': int(total)
+            })
+    except Exception as e:
+        print(f"[Seat] Failed to publish availability update: {e}")
 
 
 # ============================================
@@ -263,6 +289,18 @@ def reserve_seat():
 
                     db.session.commit()
 
+                    publish_availability_update(event_id)
+
+                    seat_dict = seat.to_dict()
+                    seat_dict['auto_assigned'] = False
+                    seat_dict['section_price'] = float(section.price) if section else None
+                    return success(seat_dict, 200)
+                elif seat and seat.status == 'reserved' and seat.reserved_by == str(user_id):
+                    # Already reserved by same user (waitlist promotion + orchestrator)
+                    db.session.rollback()
+                    section = Section.query.filter_by(
+                        section_id=target_section_id, event_id=event_id
+                    ).first()
                     seat_dict = seat.to_dict()
                     seat_dict['auto_assigned'] = False
                     seat_dict['section_price'] = float(section.price) if section else None
@@ -324,6 +362,8 @@ def reserve_seat():
                         section.available_seats -= 1
 
                     db.session.commit()
+
+                    publish_availability_update(event_id)
 
                     seat_dict = candidate.to_dict()
                     seat_dict['auto_assigned'] = True
@@ -401,6 +441,8 @@ def release_seat():
             section.available_seats += 1
 
         db.session.commit()
+
+        publish_availability_update(event_id)
 
         # SEAT-08: Publish seat.released event for waitlist promotion
         publish_seat_event(f'seat.released.{event_id}', {
@@ -507,6 +549,8 @@ def handle_reserve_request(ch, method, properties, body):
 
                     db.session.commit()
 
+                    publish_availability_update(event_id)
+
                     publish_seat_event('seat.reserve.confirmed', {
                         'waitlist_entry_id': waitlist_entry_id,
                         'event_id': event_id,
@@ -541,6 +585,59 @@ def handle_reserve_request(ch, method, properties, body):
         ch.basic_ack(delivery_tag=method.delivery_tag)
 
 
+def handle_release_request(ch, method, properties, body):
+    """Handle seat release requests from Waitlist Service (expired promotions) via AMQP."""
+    try:
+        msg = json.loads(body)
+        event_id = msg['event_id']
+        seat_id = msg['seat_id']
+        user_id = msg['user_id']
+
+        print(f"[Seat] Release request: event={event_id} seat={seat_id} user={user_id}")
+
+        with app.app_context():
+            released = release_seat_lock(event_id, seat_id, user_id)
+
+            seat = db.session.query(Seat).filter_by(
+                seat_id=seat_id, event_id=event_id
+            ).with_for_update().first()
+
+            if seat and seat.status == 'reserved' and seat.reserved_by == str(user_id):
+                section_id = seat.section_id
+                seat.status = 'available'
+                seat.reserved_by = None
+                seat.reserved_at = None
+
+                section = db.session.query(Section).filter_by(
+                    section_id=section_id, event_id=event_id
+                ).with_for_update().first()
+                if section:
+                    section.available_seats += 1
+
+                db.session.commit()
+
+                publish_availability_update(event_id)
+
+                publish_seat_event(f'seat.released.{event_id}', {
+                    'event_id': event_id,
+                    'seat_id': seat_id,
+                    'section': section.name if section else None,
+                    'section_id': section_id,
+                    'seat_number': seat.seat_number,
+                    'source': 'waitlist_expiry_release'
+                })
+
+                print(f"[Seat] Released seat {seat_id} for event {event_id}")
+            else:
+                db.session.rollback()
+                print(f"[Seat] Release request ignored: seat {seat_id} not reserved by user {user_id}")
+
+    except Exception as e:
+        print(f"[Seat] Error handling release request: {e}")
+    finally:
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+
+
 def handle_event_cancelled(ch, method, properties, body):
     """SEAT-07: Bulk-reset all reserved/booked seats and clear Redis locks when event is cancelled."""
     try:
@@ -571,6 +668,9 @@ def handle_event_cancelled(ch, method, properties, body):
                 section.available_seats = available_count
 
             db.session.commit()
+
+            publish_availability_update(event_id)
+
             print(f"[Seat] Reset {len(seats)} seats to available for event {event_id}")
 
     except Exception as e:
@@ -585,6 +685,13 @@ def start_seat_consumers():
         target=lambda: start_consumer(
             'seat_reserve_queue', 'seat_topic',
             ['seat.reserve.request'], handle_reserve_request
+        ), daemon=True
+    ).start()
+
+    threading.Thread(
+        target=lambda: start_consumer(
+            'seat_release_queue', 'seat_topic',
+            ['seat.release.request'], handle_release_request
         ), daemon=True
     ).start()
 

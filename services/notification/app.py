@@ -54,6 +54,7 @@ TWILIO_PHONE = os.environ.get('TWILIO_PHONE_NUMBER')
 EVENT_CHANNEL_MAP = {
     'booking.confirmed': ['email'],           # NOTF-01
     'booking.timeout': ['email'],             # NOTF-02
+    'booking.refund.requested': ['email'],    # Cancellation email to user
     'waitlist.promoted': ['email', 'sms'],    # NOTF-03
     'waitlist.expired': ['email'],            # Informational
     'event.cancelled': ['email'],             # NOTF-04 (Phase 5 stub)
@@ -122,6 +123,22 @@ def get_email_template(event_type, data):
         <h2>Booking Expired</h2>
         <p>Your booking for Event #{event_id} (Seat {seat_id}) has expired because the payment window closed.</p>
         <p>The seat has been released back to the pool. You may try booking again.</p>
+        """
+        return subject, body
+
+    elif event_type == 'booking.refund.requested':
+        booking_id = data.get('booking_id', 'N/A')
+        event_id = data.get('event_id', 'N/A')
+        amount = data.get('amount', 'N/A')
+        subject = f"Event Cancelled - Refund Incoming (Booking #{booking_id})"
+        body = f"""
+        <h2>Event Cancelled</h2>
+        <p>We're sorry to inform you that Event #{event_id} has been cancelled.</p>
+        <p>Your booking <strong>#{booking_id}</strong> will be refunded.</p>
+        <ul>
+            <li><strong>Amount:</strong> ${amount}</li>
+        </ul>
+        <p>Your refund is being processed and you will receive a confirmation once it is complete.</p>
         """
         return subject, body
 
@@ -423,7 +440,7 @@ def start_all_consumers():
     threading.Thread(
         target=lambda: start_consumer(
             'notification_booking_queue', 'booking_topic',
-            ['booking.confirmed', 'booking.timeout'],
+            ['booking.confirmed', 'booking.timeout', 'booking.refund.requested'],
             handle_booking_event
         ), daemon=True
     ).start()

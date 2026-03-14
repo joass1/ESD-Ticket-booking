@@ -345,12 +345,11 @@ def check_expired_promotions():
                 entry.status = 'expired'
                 db.session.commit()
 
-                # Re-publish seat.released to cascade to next waiting user (WAIT-04)
-                publish_event('seat_topic', f'seat.released.{event_id}', {
+                # Request Seat service to actually release the seat (WAIT-04)
+                publish_event('seat_topic', 'seat.release.request', {
                     'event_id': event_id,
                     'seat_id': seat_id,
-                    'section': entry.preferred_section,
-                    'source': 'waitlist_expiry'
+                    'user_id': entry.user_id
                 })
 
                 # Notify about expiration
