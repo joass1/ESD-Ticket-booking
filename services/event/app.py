@@ -3,11 +3,12 @@ sys.path.insert(0, '/app')
 
 import os
 import json
+import threading
 from flask import Flask, request
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from shared.response import success, error
-from shared.amqp_lib import connect_with_retry, setup_exchange, publish_message
+from shared.amqp_lib import connect_with_retry, setup_exchange, publish_message, start_consumer
 from datetime import datetime
 from decimal import Decimal
 
@@ -241,5 +242,42 @@ def cancel_event(event_id):
         return error(f"Failed to cancel event: {str(e)}", 500)
 
 
+# ============================================
+# AMQP Consumer: seat.availability.updated.*
+# ============================================
+
+def handle_availability_updated(ch, method, properties, body):
+    """Update event available_seats when seat service reports a change."""
+    try:
+        msg = json.loads(body)
+        event_id = msg['event_id']
+        available_seats = msg['available_seats']
+
+        with app.app_context():
+            event = db.session.execute(
+                db.select(Event).where(Event.event_id == event_id)
+            ).scalar_one_or_none()
+
+            if event:
+                event.available_seats = available_seats
+                db.session.commit()
+                print(f"[Event] Updated available_seats={available_seats} for event {event_id}")
+
+    except Exception as e:
+        print(f"[Event] Error handling availability update: {e}")
+    finally:
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+
+
+def start_event_consumers():
+    threading.Thread(
+        target=lambda: start_consumer(
+            'event_availability_queue', 'seat_topic',
+            ['seat.availability.updated.*'], handle_availability_updated
+        ), daemon=True
+    ).start()
+
+
 if __name__ == '__main__':
+    start_event_consumers()
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5001)), debug=False)
