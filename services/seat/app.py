@@ -10,9 +10,10 @@ from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from shared.response import success, error
 from shared.amqp_lib import connect_with_retry, setup_exchange, publish_message, start_consumer, run_with_amqp
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 import redis
+from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
 CORS(app)
@@ -427,9 +428,18 @@ def release_seat():
         return error("event_id, seat_id, and user_id are required", 400)
 
     try:
-        # Verify Redis lock ownership
-        if not release_seat_lock(event_id, seat_id, user_id):
-            return error("Not the lock owner", 403)
+        # Try Redis lock release first
+        lock_released = release_seat_lock(event_id, seat_id, user_id)
+
+        if not lock_released:
+            # Redis lock may have expired -- check if seat is reserved by this
+            # user in MySQL so we can still release it (defense against orphans)
+            key = f"seat:{event_id}:{seat_id}"
+            lock_exists = redis_client.exists(key)
+            if lock_exists:
+                # Lock exists but belongs to someone else
+                return error("Not the lock owner", 403)
+            # Lock expired -- fall through and verify via MySQL reserved_by
 
         # MySQL: reset seat to available
         seat = db.session.query(Seat).filter_by(
@@ -439,7 +449,18 @@ def release_seat():
         if not seat:
             return error("Seat not found", 404)
 
+        # If Redis lock was expired, verify MySQL ownership before releasing
+        if not lock_released:
+            if seat.reserved_by != str(user_id):
+                db.session.rollback()
+                return error("Not the lock owner", 403)
+            print(f"[Seat] Releasing orphaned seat {seat_id} (Redis lock expired, MySQL reserved_by matched)")
+
         section_id = seat.section_id
+
+        if seat.status not in ('reserved', 'booked'):
+            db.session.rollback()
+            return success({'seat_id': seat_id, 'status': seat.status, 'message': 'Already released'})
 
         seat.status = 'available'
         seat.reserved_by = None
@@ -716,6 +737,91 @@ def start_seat_consumers():
     ).start()
 
 
+# ============================================
+# Orphaned Seat Cleanup (APScheduler)
+# ============================================
+
+SEAT_LOCK_TTL = 600  # Must match acquire_seat_lock TTL (10 minutes)
+CLEANUP_GRACE_PERIOD = 60  # Extra grace period beyond TTL (seconds)
+
+
+def cleanup_orphaned_seats():
+    """Periodically find seats with status=reserved that have no Redis lock
+    and reset them to available. This catches seats orphaned when Redis locks
+    expire before the orchestrator or APScheduler releases them."""
+    with app.app_context():
+        try:
+            cutoff = datetime.utcnow() - timedelta(
+                seconds=SEAT_LOCK_TTL + CLEANUP_GRACE_PERIOD
+            )
+            # Find reserved seats older than lock TTL + grace period
+            orphaned = Seat.query.filter(
+                Seat.status == 'reserved',
+                Seat.reserved_at < cutoff
+            ).all()
+
+            if not orphaned:
+                return
+
+            released_count = 0
+            events_affected = set()
+
+            for seat in orphaned:
+                key = f"seat:{seat.event_id}:{seat.seat_id}"
+                if not redis_client.exists(key):
+                    # No Redis lock -- this seat is truly orphaned
+                    section = db.session.query(Section).filter_by(
+                        section_id=seat.section_id, event_id=seat.event_id
+                    ).with_for_update().first()
+
+                    seat.status = 'available'
+                    seat.reserved_by = None
+                    seat.reserved_at = None
+
+                    if section:
+                        section.available_seats += 1
+
+                    events_affected.add(seat.event_id)
+                    released_count += 1
+
+                    # Publish seat released for waitlist promotion
+                    publish_seat_event(f'seat.released.{seat.event_id}', {
+                        'event_id': seat.event_id,
+                        'seat_id': seat.seat_id,
+                        'section': section.name if section else None,
+                        'section_id': seat.section_id,
+                        'seat_number': seat.seat_number,
+                        'source': 'orphan_cleanup'
+                    })
+
+            if released_count > 0:
+                db.session.commit()
+                print(f"[Seat] Orphan cleanup: released {released_count} seats")
+                for eid in events_affected:
+                    publish_availability_update(eid)
+            else:
+                db.session.rollback()
+
+        except Exception as e:
+            db.session.rollback()
+            print(f"[Seat] Orphan cleanup error: {e}")
+
+
+def start_cleanup_scheduler():
+    """Start APScheduler to run orphaned seat cleanup every 60 seconds."""
+    scheduler = BackgroundScheduler(daemon=True)
+    scheduler.add_job(
+        cleanup_orphaned_seats,
+        'interval',
+        seconds=60,
+        misfire_grace_time=120,
+        id='orphan_seat_cleanup'
+    )
+    scheduler.start()
+    print("[Seat] Orphan cleanup scheduler started (60s interval)")
+
+
 if __name__ == '__main__':
     start_seat_consumers()
+    start_cleanup_scheduler()
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5003)), debug=False)
