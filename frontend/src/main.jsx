@@ -5,12 +5,10 @@ import './index.css';
 import Layout from './components/Layout.jsx';
 import EventsPage from './pages/EventsPage.jsx';
 import NotFoundPage from './pages/NotFoundPage.jsx';
-import {
-  EventDetailPage,
-  BookingPage,
-  WaitlistPage,
-  BookingHistoryPage,
-} from './pages/PlaceholderPages.jsx';
+import EventDetailPage from './pages/EventDetailPage.jsx';
+import WaitlistPage from './pages/WaitlistPage.jsx';
+import BookingHistoryPage from './pages/BookingHistoryPage.jsx';
+import { BookingPage } from './pages/PlaceholderPages.jsx';
 
 const router = createBrowserRouter([
   {
