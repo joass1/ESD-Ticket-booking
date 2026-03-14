@@ -10,8 +10,9 @@ from io import BytesIO
 from decimal import Decimal
 from datetime import datetime
 
+import uuid as uuid_mod
 import qrcode
-from flask import Flask
+from flask import Flask, request as flask_request, g
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from flask_socketio import SocketIO, join_room
@@ -20,6 +21,18 @@ from shared.amqp_lib import start_consumer
 
 app = Flask(__name__)
 CORS(app)
+
+
+@app.before_request
+def set_correlation_id():
+    g.correlation_id = flask_request.headers.get('X-Correlation-ID') or str(uuid_mod.uuid4())
+
+
+@app.after_request
+def add_correlation_header(response):
+    response.headers['X-Correlation-ID'] = getattr(g, 'correlation_id', '')
+    return response
+
 
 # Database configuration
 db_host = os.environ.get('DB_HOST', 'mysql')

@@ -6,7 +6,8 @@ import json
 import threading
 from decimal import Decimal
 from datetime import datetime
-from flask import Flask, request
+import uuid
+from flask import Flask, request, g
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from shared.response import success, error
@@ -14,6 +15,18 @@ from shared.amqp_lib import connect_with_retry, setup_exchange, publish_message,
 
 app = Flask(__name__)
 CORS(app)
+
+
+@app.before_request
+def set_correlation_id():
+    g.correlation_id = request.headers.get('X-Correlation-ID') or str(uuid.uuid4())
+
+
+@app.after_request
+def add_correlation_header(response):
+    response.headers['X-Correlation-ID'] = getattr(g, 'correlation_id', '')
+    return response
+
 
 # Database configuration
 db_host = os.environ.get('DB_HOST', 'mysql')

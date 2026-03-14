@@ -3,6 +3,8 @@ import time
 import threading
 import os
 
+DEFAULT_DLX = 'dlx_exchange'
+
 
 def connect_with_retry(host=None, max_retries=12, retry_delay=5):
     """Connect to RabbitMQ with retry logic. Returns pika.BlockingConnection."""
@@ -33,10 +35,20 @@ def setup_exchange(channel, exchange_name, exchange_type='topic'):
     )
 
 
-def publish_message(channel, exchange, routing_key, body, properties=None):
-    """Publish a message to an exchange with persistent delivery."""
+def publish_message(channel, exchange, routing_key, body, properties=None, correlation_id=None):
+    """Publish a message to an exchange with persistent delivery and optional correlation ID."""
     if properties is None:
-        properties = pika.BasicProperties(delivery_mode=2)  # persistent
+        # Try to get correlation_id from Flask request context if not provided
+        if correlation_id is None:
+            try:
+                from flask import g
+                correlation_id = getattr(g, 'correlation_id', None)
+            except (ImportError, RuntimeError):
+                pass
+        properties = pika.BasicProperties(
+            delivery_mode=2,
+            correlation_id=correlation_id
+        )
     channel.basic_publish(
         exchange=exchange,
         routing_key=routing_key,
@@ -76,6 +88,31 @@ def start_consumer(queue_name, exchange_name, routing_keys, callback,
         except Exception as e:
             print(f"[AMQP] Consumer error: {e}. Reconnecting in 5s...")
             time.sleep(5)
+
+
+def setup_queue_with_dlq(channel, queue_name, exchange, routing_key, dlx_exchange=None):
+    """Declare a queue with dead letter exchange arguments.
+
+    Creates the DLX exchange (fanout) and a DLQ queue, then declares the
+    main queue with x-dead-letter-exchange pointing to the DLX.
+    """
+    dlx = dlx_exchange or DEFAULT_DLX
+    dlq_name = f"{queue_name}_dlq"
+
+    # Declare the dead letter exchange (fanout so all DLQ consumers get messages)
+    channel.exchange_declare(exchange=dlx, exchange_type='fanout', durable=True)
+
+    # Declare the dead letter queue
+    channel.queue_declare(queue=dlq_name, durable=True)
+    channel.queue_bind(exchange=dlx, queue=dlq_name)
+
+    # Declare main queue with DLX argument
+    channel.queue_declare(
+        queue=queue_name,
+        durable=True,
+        arguments={'x-dead-letter-exchange': dlx}
+    )
+    channel.queue_bind(exchange=exchange, queue=queue_name, routing_key=routing_key)
 
 
 def run_with_amqp(flask_app, port, consumer_setup_fn):
