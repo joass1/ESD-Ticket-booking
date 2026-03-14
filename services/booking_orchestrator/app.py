@@ -151,7 +151,12 @@ def health():
 
 @app.route('/bookings/initiate', methods=['POST'])
 def initiate_booking():
-    """Saga entry point: reserve seat -> create booking -> create payment intent."""
+    """Saga entry point: reserve seat -> create booking -> create payment intent.
+
+    If pre_reserved=true (waitlist promotion path), the seat is already reserved
+    in the seat service via AMQP. Skip the reserve step and pass amount directly.
+    Required extra fields for pre_reserved path: amount.
+    """
     data = request.get_json()
     if not data:
         return error("Invalid JSON", 400)
@@ -165,6 +170,10 @@ def initiate_booking():
     event_id = data['event_id']
     seat_id = data['seat_id']
     email = data['email']
+    pre_reserved = data.get('pre_reserved', False)
+
+    if pre_reserved and not data.get('amount'):
+        return error("amount is required when pre_reserved=true", 400)
 
     # Create saga log entry
     saga_id = str(uuid.uuid4())
@@ -180,34 +189,45 @@ def initiate_booking():
     db.session.add(saga)
     db.session.commit()
 
-    # ---- Step 1: Reserve Seat ----
-    try:
-        seat_resp = requests.post(
-            f"{SEAT_SERVICE_URL}/seats/reserve",
-            json={'event_id': event_id, 'seat_id': seat_id, 'user_id': user_id},
-            timeout=10
-        )
-        if seat_resp.status_code != 200:
-            saga.status = 'FAILED'
-            saga.error_message = f"Seat reservation failed: {seat_resp.text}"
-            db.session.commit()
-            return error(f"Seat reservation failed: {seat_resp.json().get('message', seat_resp.text)}", 409)
-
-        seat_data = seat_resp.json().get('data', {})
-        actual_seat_id = seat_data.get('seat_id', seat_id)
-        section_price = seat_data.get('section_price')
-
-        # If auto-assigned, the seat_id may differ
+    # ---- Step 1: Reserve Seat (skip if already reserved via waitlist promotion) ----
+    if pre_reserved:
+        # Seat was reserved by the seat service via AMQP when user was promoted.
+        # Use the amount provided by the caller (from waitlist.promoted message).
+        actual_seat_id = seat_id
+        section_price = data['amount']
+        seat_data = {'seat_id': seat_id, 'section_price': section_price}
         saga.seat_id = actual_seat_id
         saga.amount = section_price
         saga.status = 'SEAT_RESERVED'
         db.session.commit()
+    else:
+        try:
+            seat_resp = requests.post(
+                f"{SEAT_SERVICE_URL}/seats/reserve",
+                json={'event_id': event_id, 'seat_id': seat_id, 'user_id': user_id},
+                timeout=10
+            )
+            if seat_resp.status_code != 200:
+                saga.status = 'FAILED'
+                saga.error_message = f"Seat reservation failed: {seat_resp.text}"
+                db.session.commit()
+                return error(f"Seat reservation failed: {seat_resp.json().get('message', seat_resp.text)}", 409)
 
-    except requests.exceptions.RequestException as e:
-        saga.status = 'FAILED'
-        saga.error_message = f"Seat service unreachable: {str(e)}"
-        db.session.commit()
-        return error(f"Seat service unreachable: {str(e)}", 503)
+            seat_data = seat_resp.json().get('data', {})
+            actual_seat_id = seat_data.get('seat_id', seat_id)
+            section_price = seat_data.get('section_price')
+
+            # If auto-assigned, the seat_id may differ
+            saga.seat_id = actual_seat_id
+            saga.amount = section_price
+            saga.status = 'SEAT_RESERVED'
+            db.session.commit()
+
+        except requests.exceptions.RequestException as e:
+            saga.status = 'FAILED'
+            saga.error_message = f"Seat service unreachable: {str(e)}"
+            db.session.commit()
+            return error(f"Seat service unreachable: {str(e)}", 503)
 
     # ---- Step 2: Create Booking ----
     try:

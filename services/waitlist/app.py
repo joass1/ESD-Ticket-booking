@@ -276,7 +276,10 @@ def handle_reserve_response(ch, method, properties, body):
                     entry.promotion_expires_at = None
                     db.session.commit()
 
-                    # Re-publish seat.released to try next waiting user
+                    # The seat service already failed to reserve -- seat is still
+                    # available. Re-publish seat.released so the next waiting user
+                    # gets promoted. (No need for seat.release.request here because
+                    # seat.reserve.failed means the seat was never actually reserved.)
                     publish_event('seat_topic', f'seat.released.{event_id}', {
                         'event_id': event_id,
                         'seat_id': seat_id,
@@ -341,15 +344,20 @@ def check_expired_promotions():
             for entry in expired_entries:
                 event_id = entry.event_id
                 seat_id = entry.promoted_seat_id
+                user_id = entry.user_id
 
                 entry.status = 'expired'
                 db.session.commit()
 
-                # Re-publish seat.released to cascade to next waiting user (WAIT-04)
-                publish_event('seat_topic', f'seat.released.{event_id}', {
+                # Ask the seat service to release the reserved seat via AMQP (WAIT-04).
+                # The seat service will publish seat.released.{event_id} after releasing,
+                # which cascades to the next waiting user. Do NOT publish seat.released
+                # here directly -- the seat is still physically reserved until the seat
+                # service processes this request and actually frees it.
+                publish_event('seat_topic', 'seat.release.request', {
                     'event_id': event_id,
                     'seat_id': seat_id,
-                    'section': entry.preferred_section,
+                    'user_id': user_id,
                     'source': 'waitlist_expiry'
                 })
 

@@ -61,6 +61,23 @@ def publish_seat_event(routing_key, payload):
         amqp_channel = None
 
 
+def publish_availability_update(event_id):
+    """Publish current total available seat count for an event to seat_topic.
+
+    Consumed by the Event Service to keep its available_seats field accurate.
+    """
+    try:
+        total_available = db.session.query(
+            db.func.sum(Section.available_seats)
+        ).filter_by(event_id=event_id).scalar() or 0
+        publish_seat_event(f'seat.availability.updated.{event_id}', {
+            'event_id': event_id,
+            'available_seats': int(total_available)
+        })
+    except Exception as e:
+        print(f"[Seat] Failed to publish availability update for event {event_id}: {e}")
+
+
 # ============================================
 # Models
 # ============================================
@@ -262,6 +279,7 @@ def reserve_seat():
                         section.available_seats -= 1
 
                     db.session.commit()
+                    publish_availability_update(event_id)
 
                     seat_dict = seat.to_dict()
                     seat_dict['auto_assigned'] = False
@@ -324,6 +342,7 @@ def reserve_seat():
                         section.available_seats -= 1
 
                     db.session.commit()
+                    publish_availability_update(event_id)
 
                     seat_dict = candidate.to_dict()
                     seat_dict['auto_assigned'] = True
@@ -401,6 +420,7 @@ def release_seat():
             section.available_seats += 1
 
         db.session.commit()
+        publish_availability_update(event_id)
 
         # SEAT-08: Publish seat.released event for waitlist promotion
         publish_seat_event(f'seat.released.{event_id}', {
@@ -579,12 +599,79 @@ def handle_event_cancelled(ch, method, properties, body):
         ch.basic_ack(delivery_tag=method.delivery_tag)
 
 
+def handle_release_request(ch, method, properties, body):
+    """Handle seat.release.request from Waitlist Service (waitlist expiry).
+
+    Releases the seat in MySQL, clears the Redis lock, and publishes
+    seat.released.{event_id} so the next waiting user can be promoted.
+    """
+    try:
+        msg = json.loads(body)
+        event_id = msg['event_id']
+        seat_id = msg['seat_id']
+        user_id = msg['user_id']
+
+        print(f"[Seat] Release request (waitlist expiry): event={event_id} seat={seat_id} user={user_id}")
+
+        with app.app_context():
+            # Only release if currently reserved by this user
+            seat = db.session.query(Seat).filter_by(
+                seat_id=seat_id, event_id=event_id
+            ).with_for_update().first()
+
+            if not seat:
+                print(f"[Seat] Release request: seat {seat_id} not found")
+                return
+
+            if seat.status != 'reserved' or seat.reserved_by != str(user_id):
+                print(f"[Seat] Release request: seat {seat_id} not reserved by user {user_id}, skipping")
+                return
+
+            section_id = seat.section_id
+            seat.status = 'available'
+            seat.reserved_by = None
+            seat.reserved_at = None
+
+            section = db.session.query(Section).filter_by(
+                section_id=section_id, event_id=event_id
+            ).with_for_update().first()
+
+            if section:
+                section.available_seats += 1
+
+            db.session.commit()
+            remove_seat_lock(event_id, seat_id)
+
+            # Publish seat.released so the next waiting user gets promoted
+            publish_seat_event(f'seat.released.{event_id}', {
+                'event_id': event_id,
+                'seat_id': seat_id,
+                'section': section.name if section else None,
+                'section_id': section_id,
+                'seat_number': seat.seat_number,
+                'source': 'waitlist_expiry_release'
+            })
+            print(f"[Seat] Released seat {seat_id} for expired waitlist promotion")
+
+    except Exception as e:
+        print(f"[Seat] Error handling release request: {e}")
+    finally:
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+
+
 def start_seat_consumers():
     """Start AMQP consumers for seat reserve requests and event cancellation."""
     threading.Thread(
         target=lambda: start_consumer(
             'seat_reserve_queue', 'seat_topic',
             ['seat.reserve.request'], handle_reserve_request
+        ), daemon=True
+    ).start()
+
+    threading.Thread(
+        target=lambda: start_consumer(
+            'seat_release_request_queue', 'seat_topic',
+            ['seat.release.request'], handle_release_request
         ), daemon=True
     ).start()
 
