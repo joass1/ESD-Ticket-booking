@@ -64,8 +64,12 @@ except Exception as e:
     print(f"[Orchestrator] AMQP connection failed (will retry on publish): {e}")
 
 
-def publish_booking_event(routing_key, payload):
-    """Publish a booking event to booking_topic exchange."""
+def publish_booking_event(routing_key, payload, _retried=False):
+    """Publish a booking event to booking_topic exchange.
+
+    On failure (e.g. stale connection from heartbeat timeout), reconnects
+    and retries once so the message is not silently lost.
+    """
     global amqp_channel
     try:
         if amqp_channel is None or amqp_channel.is_closed:
@@ -73,9 +77,17 @@ def publish_booking_event(routing_key, payload):
             amqp_channel = conn.channel()
             setup_exchange(amqp_channel, 'booking_topic', 'topic')
         publish_message(amqp_channel, 'booking_topic', routing_key, json.dumps(payload))
-        print(f"[Orchestrator] Published {routing_key}: {payload.get('saga_id', 'unknown')}")
+        print(f"[Orchestrator] Published {routing_key}: {payload.get('saga_id', 'unknown')}",
+              flush=True)
     except Exception as e:
-        print(f"[Orchestrator] Failed to publish {routing_key}: {e}")
+        print(f"[Orchestrator] Publish failed for {routing_key}: {e}", flush=True)
+        if not _retried:
+            # Connection likely went stale; force reconnect and retry once
+            print("[Orchestrator] Reconnecting to AMQP and retrying...", flush=True)
+            amqp_channel = None
+            publish_booking_event(routing_key, payload, _retried=True)
+        else:
+            print(f"[Orchestrator] Retry also failed for {routing_key}: {e}", flush=True)
 
 
 # ============================================

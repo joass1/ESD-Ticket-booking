@@ -14,13 +14,17 @@ export default function ConfirmationStep({ bookingId, onViewBookings }) {
     if (!bookingId) return;
 
     let cancelled = false;
+    let intervalId = null;
 
     const fetchTicket = async () => {
       try {
         const data = await api(`/api/tickets/booking/${bookingId}`);
         if (!cancelled) {
           setTicket(data);
+          setError(null);
           setLoading(false);
+          // Stop polling once ticket is found
+          if (intervalId) clearInterval(intervalId);
         }
       } catch {
         if (!cancelled) {
@@ -36,14 +40,18 @@ export default function ConfirmationStep({ bookingId, onViewBookings }) {
       return () => { cancelled = true; };
     }
 
-    // Fallback: try after 3 seconds, retry after 10 seconds
-    const timer3 = setTimeout(fetchTicket, 3000);
-    const timer10 = setTimeout(fetchTicket, 10000);
+    // Fallback: poll every 3 seconds for up to 30 seconds
+    const timer = setTimeout(fetchTicket, 2000);
+    intervalId = setInterval(fetchTicket, 3000);
+    const stopPolling = setTimeout(() => {
+      if (intervalId) clearInterval(intervalId);
+    }, 30000);
 
     return () => {
       cancelled = true;
-      clearTimeout(timer3);
-      clearTimeout(timer10);
+      clearTimeout(timer);
+      clearTimeout(stopPolling);
+      if (intervalId) clearInterval(intervalId);
     };
   }, [bookingId, ticketReady]);
 
