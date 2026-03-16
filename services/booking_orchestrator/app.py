@@ -48,6 +48,7 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
 # Service URLs (configurable via env vars)
+EVENT_SERVICE_URL = os.environ.get('EVENT_SERVICE_URL', 'http://event:5001')
 SEAT_SERVICE_URL = os.environ.get('SEAT_SERVICE_URL', 'http://seat:5003')
 PAYMENT_SERVICE_URL = os.environ.get('PAYMENT_SERVICE_URL', 'http://payment:5004')
 BOOKING_SERVICE_URL = os.environ.get('BOOKING_SERVICE_URL', 'http://booking:5002')
@@ -191,6 +192,39 @@ def initiate_booking():
     )
     db.session.add(saga)
     db.session.commit()
+
+    # ---- Step 0: Check Event Status ----
+    try:
+        event_resp = requests.get(
+            f"{EVENT_SERVICE_URL}/events/{event_id}",
+            timeout=10
+        )
+        if event_resp.status_code != 200:
+            saga.status = 'FAILED'
+            saga.error_message = f"Event not found (ID: {event_id})"
+            db.session.commit()
+            return error(f"Event not found", 404)
+
+        event_data = event_resp.json().get('data', {})
+        event_status = event_data.get('status', '')
+
+        if event_status == 'cancelled':
+            saga.status = 'FAILED'
+            saga.error_message = 'Event has been cancelled'
+            db.session.commit()
+            return error("This event has been cancelled and is no longer accepting bookings", 409)
+
+        if event_status not in ('upcoming', 'ongoing'):
+            saga.status = 'FAILED'
+            saga.error_message = f"Event is not bookable (status: {event_status})"
+            db.session.commit()
+            return error(f"Event is not available for booking (status: {event_status})", 409)
+
+    except requests.exceptions.RequestException as e:
+        saga.status = 'FAILED'
+        saga.error_message = f"Event service unreachable: {str(e)}"
+        db.session.commit()
+        return error(f"Event service unreachable: {str(e)}", 503)
 
     # ---- Step 1: Reserve Seat ----
     try:

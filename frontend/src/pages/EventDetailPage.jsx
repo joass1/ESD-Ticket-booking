@@ -204,8 +204,8 @@ export default function EventDetailPage() {
         </div>
       )}
 
-      {/* Seat map */}
-      {view === 'overview' && (
+      {/* Seat map (hidden for cancelled events) */}
+      {event.status !== 'cancelled' && view === 'overview' && (
         <VenueOverview
           eventId={eventId}
           onSectionSelect={handleSectionSelect}
@@ -213,7 +213,7 @@ export default function EventDetailPage() {
         />
       )}
 
-      {view === 'section' && selectedSection && (
+      {event.status !== 'cancelled' && view === 'section' && selectedSection && (
         <SectionGrid
           eventId={eventId}
           section={selectedSection}

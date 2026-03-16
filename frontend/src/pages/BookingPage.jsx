@@ -49,6 +49,13 @@ export default function BookingPage() {
         ]);
         setEvent(eventData);
 
+        // Guard: reject booking for cancelled events
+        if (eventData.status === 'cancelled') {
+          setError('This event has been cancelled and is no longer accepting bookings.');
+          setLoading(false);
+          return;
+        }
+
         const allSeats = Array.isArray(seatsData) ? seatsData : [];
         const foundSeat = allSeats.find((s) => String(s.seat_id) === String(seatId));
         setSeat(foundSeat || null);

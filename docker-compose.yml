@@ -347,6 +347,7 @@ services:
       DB_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
       DB_NAME: saga_log_db
       RABBITMQ_HOST: rabbitmq
+      EVENT_SERVICE_URL: http://event:5001
       PORT: "5010"
     ports:
       - "5010:5010"
