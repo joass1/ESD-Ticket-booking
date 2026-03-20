@@ -46,12 +46,9 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
 # SMU Lab Notification API
-NOTI_BASE_URL = os.environ.get(
-    'SMU_NOTI_BASE_URL',
-    'https://smuedu-dev.outsystemsenterprise.com/SMULab_Notification/rest/Notification'
-)
+NOTI_BASE_URL = os.environ['SMU_NOTI_BASE_URL']
 NOTI_HEADERS = {
-    "X-Contacts-Key": os.environ.get('SMU_NOTI_API_KEY', '4e46111f-f4a9-443b-bc63-cd0d52437c04'),
+    "X-Contacts-Key": os.environ['SMU_NOTI_API_KEY'],
     "Content-Type": "application/json"
 }
 
