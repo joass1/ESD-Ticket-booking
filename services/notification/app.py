@@ -5,10 +5,10 @@ import os
 import json
 import uuid
 import threading
+import requests
 from flask import Flask, request, g
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
-from flask_mail import Mail, Message
 from shared.response import success, error
 from shared.amqp_lib import start_consumer
 
@@ -43,21 +43,17 @@ app.config['SQLALCHEMY_POOL_RECYCLE'] = 1800
 app.config['SQLALCHEMY_POOL_PRE_PING'] = True
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# Email configuration (Gmail SMTP)
-app.config['MAIL_SERVER'] = 'smtp.gmail.com'
-app.config['MAIL_PORT'] = 587
-app.config['MAIL_USE_TLS'] = True
-app.config['MAIL_USERNAME'] = os.environ.get('GMAIL_USER')
-app.config['MAIL_PASSWORD'] = os.environ.get('GMAIL_APP_PASSWORD')
-app.config['MAIL_DEFAULT_SENDER'] = os.environ.get('GMAIL_USER')
-
 db = SQLAlchemy(app)
-mail = Mail(app)
 
-# Twilio configuration
-TWILIO_ACCOUNT_SID = os.environ.get('TWILIO_ACCOUNT_SID')
-TWILIO_AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN')
-TWILIO_PHONE = os.environ.get('TWILIO_PHONE_NUMBER')
+# SMU Lab Notification API
+NOTI_BASE_URL = os.environ.get(
+    'SMU_NOTI_BASE_URL',
+    'https://smuedu-dev.outsystemsenterprise.com/SMULab_Notification/rest/Notification'
+)
+NOTI_HEADERS = {
+    "X-Contacts-Key": os.environ.get('SMU_NOTI_API_KEY', '4e46111f-f4a9-443b-bc63-cd0d52437c04'),
+    "Content-Type": "application/json"
+}
 
 
 # ============================================
@@ -143,16 +139,30 @@ def get_email_template(event_type, data):
         booking_id = data.get('booking_id', 'N/A')
         event_id = data.get('event_id', 'N/A')
         amount = data.get('amount', 'N/A')
-        subject = f"Event Cancelled - Refund Incoming (Booking #{booking_id})"
-        body = f"""
-        <h2>Event Cancelled</h2>
-        <p>We're sorry to inform you that Event #{event_id} has been cancelled.</p>
-        <p>Your booking <strong>#{booking_id}</strong> will be refunded.</p>
-        <ul>
-            <li><strong>Amount:</strong> ${amount}</li>
-        </ul>
-        <p>Your refund is being processed and you will receive a confirmation once it is complete.</p>
-        """
+        refund_type = data.get('refund_type', 'event_cancelled')
+
+        if refund_type == 'voluntary':
+            subject = f"Refund Requested - Booking #{booking_id}"
+            body = f"""
+            <h2>Refund Requested</h2>
+            <p>Your refund request for booking <strong>#{booking_id}</strong> has been received.</p>
+            <ul>
+                <li><strong>Event ID:</strong> {event_id}</li>
+                <li><strong>Original Amount:</strong> ${amount}</li>
+            </ul>
+            <p>A 10% service fee will be deducted from your refund. You will receive a confirmation once processing is complete.</p>
+            """
+        else:
+            subject = f"Event Cancelled - Refund Incoming (Booking #{booking_id})"
+            body = f"""
+            <h2>Event Cancelled</h2>
+            <p>We're sorry to inform you that Event #{event_id} has been cancelled.</p>
+            <p>Your booking <strong>#{booking_id}</strong> will be fully refunded with no service fee.</p>
+            <ul>
+                <li><strong>Amount:</strong> ${amount}</li>
+            </ul>
+            <p>Your refund is being processed and you will receive a confirmation once it is complete.</p>
+            """
         return subject, body
 
     elif event_type == 'waitlist.promoted':
@@ -198,17 +208,31 @@ def get_email_template(event_type, data):
         original_amount = data.get('original_amount', 'N/A')
         service_fee = data.get('service_fee', 0)
         refund_amount = data.get('refund_amount', original_amount)
-        subject = "Refund Processed"
-        body = f"""
-        <h2>Refund Processed</h2>
-        <p>Your refund for booking <strong>#{booking_id}</strong> has been processed.</p>
-        <ul>
-            <li><strong>Original Amount:</strong> ${original_amount}</li>
-            <li><strong>Processing Fee (10%):</strong> ${service_fee}</li>
-            <li><strong>Net Refund:</strong> ${refund_amount}</li>
-        </ul>
-        <p>Please allow 5-10 business days for the refund to appear on your statement.</p>
-        """
+        refund_type = data.get('refund_type', 'voluntary')
+
+        if refund_type == 'event_cancelled':
+            subject = "Full Refund Processed"
+            body = f"""
+            <h2>Full Refund Processed</h2>
+            <p>Your refund for booking <strong>#{booking_id}</strong> has been processed.</p>
+            <ul>
+                <li><strong>Full Refund:</strong> ${refund_amount}</li>
+            </ul>
+            <p>No service fee was charged as the event was cancelled by the organizer.</p>
+            <p>Please allow 5-10 business days for the refund to appear on your statement.</p>
+            """
+        else:
+            subject = "Refund Processed"
+            body = f"""
+            <h2>Refund Processed</h2>
+            <p>Your refund for booking <strong>#{booking_id}</strong> has been processed.</p>
+            <ul>
+                <li><strong>Original Amount:</strong> ${original_amount}</li>
+                <li><strong>Processing Fee (10%):</strong> ${service_fee}</li>
+                <li><strong>Net Refund:</strong> ${refund_amount}</li>
+            </ul>
+            <p>Please allow 5-10 business days for the refund to appear on your statement.</p>
+            """
         return subject, body
 
     else:
@@ -231,7 +255,7 @@ def get_sms_template(event_type, data):
 # ============================================
 
 def send_email(to, subject, html_body, event_type, user_id):
-    """Send email via Gmail SMTP. Gracefully degrades if credentials not configured."""
+    """Send email via SMU Lab Notification API."""
     with app.app_context():
         log = NotificationLog(
             user_id=user_id,
@@ -243,19 +267,20 @@ def send_email(to, subject, html_body, event_type, user_id):
             status='pending'
         )
 
-        if not app.config.get('MAIL_USERNAME'):
-            log.status = 'failed'
-            log.error_message = 'Email credentials not configured'
-            db.session.add(log)
-            db.session.commit()
-            print(f"[NOTIFICATION] Email skipped (no credentials): {event_type} -> {to}")
-            return
-
         try:
-            msg = Message(subject=subject, recipients=[to], html=html_body)
-            mail.send(msg)
-            log.status = 'sent'
-            print(f"[NOTIFICATION] Email sent: {event_type} -> {to}")
+            resp = requests.post(
+                f"{NOTI_BASE_URL}/SendEmail",
+                headers=NOTI_HEADERS,
+                json={"emailAddress": to, "emailSubject": subject, "emailBody": html_body},
+                timeout=10
+            )
+            if resp.ok:
+                log.status = 'sent'
+                print(f"[NOTIFICATION] Email sent: {event_type} -> {to}")
+            else:
+                log.status = 'failed'
+                log.error_message = resp.text
+                print(f"[NOTIFICATION] Email failed ({resp.status_code}): {event_type} -> {to}")
         except Exception as e:
             log.status = 'failed'
             log.error_message = str(e)
@@ -266,11 +291,11 @@ def send_email(to, subject, html_body, event_type, user_id):
 
 
 # ============================================
-# SMS Sender (Twilio)
+# SMS Sender (SMU Lab API)
 # ============================================
 
 def send_sms(to, body, event_type, user_id):
-    """Send SMS via Twilio. Gracefully degrades if credentials not configured."""
+    """Send SMS via SMU Lab Notification API."""
     with app.app_context():
         log = NotificationLog(
             user_id=user_id,
@@ -282,20 +307,20 @@ def send_sms(to, body, event_type, user_id):
             status='pending'
         )
 
-        if not TWILIO_ACCOUNT_SID:
-            log.status = 'failed'
-            log.error_message = 'SMS credentials not configured'
-            db.session.add(log)
-            db.session.commit()
-            print(f"[NOTIFICATION] SMS skipped (no credentials): {event_type} -> {to}")
-            return
-
         try:
-            from twilio.rest import Client
-            client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-            client.messages.create(body=body, from_=TWILIO_PHONE, to=to)
-            log.status = 'sent'
-            print(f"[NOTIFICATION] SMS sent: {event_type} -> {to}")
+            resp = requests.post(
+                f"{NOTI_BASE_URL}/SendSMS",
+                headers=NOTI_HEADERS,
+                json={"mobile": to, "message": body},
+                timeout=10
+            )
+            if resp.ok:
+                log.status = 'sent'
+                print(f"[NOTIFICATION] SMS sent: {event_type} -> {to}")
+            else:
+                log.status = 'failed'
+                log.error_message = resp.text
+                print(f"[NOTIFICATION] SMS failed ({resp.status_code}): {event_type} -> {to}")
         except Exception as e:
             log.status = 'failed'
             log.error_message = str(e)
@@ -442,6 +467,55 @@ def get_user_notifications(user_id):
         return success([log.to_dict() for log in logs])
     except Exception as e:
         return error(f"Failed to fetch notifications: {str(e)}", 500)
+
+
+# ============================================
+# OTP Endpoints (SMU Lab API)
+# ============================================
+
+@app.route('/notifications/otp/send', methods=['POST'])
+def send_otp():
+    """Send OTP to a mobile number via SMU Lab API."""
+    data = request.get_json()
+    mobile = data.get('mobile') if data else None
+    if not mobile:
+        return error("mobile is required", 400)
+    try:
+        resp = requests.post(
+            f"{NOTI_BASE_URL}/SendOTP",
+            headers=NOTI_HEADERS,
+            json={"Mobile": mobile},
+            timeout=10
+        )
+        result = resp.json()
+        if resp.ok and result.get('Success'):
+            return success({"verification_sid": result.get('VerificationSid')})
+        else:
+            return error(result.get('ErrorMessage', 'Failed to send OTP'), 502)
+    except Exception as e:
+        return error(f"OTP send failed: {str(e)}", 500)
+
+
+@app.route('/notifications/otp/verify', methods=['POST'])
+def verify_otp():
+    """Verify OTP code via SMU Lab API."""
+    data = request.get_json()
+    if not data or not data.get('verification_sid') or not data.get('code'):
+        return error("verification_sid and code are required", 400)
+    try:
+        resp = requests.post(
+            f"{NOTI_BASE_URL}/VerifyOTP",
+            headers=NOTI_HEADERS,
+            json={"VerificationSid": data['verification_sid'], "Code": data['code']},
+            timeout=10
+        )
+        result = resp.json()
+        if resp.ok and result.get('Success'):
+            return success({"status": result.get('Status', 'approved')})
+        else:
+            return error(result.get('ErrorMessage', 'Verification failed'), 400)
+    except Exception as e:
+        return error(f"OTP verify failed: {str(e)}", 500)
 
 
 # ============================================
