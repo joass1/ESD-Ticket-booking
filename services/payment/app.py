@@ -266,6 +266,7 @@ def handle_refund_process(ch, method, properties, body):
         user_id = data['user_id']
         email = data['email']
         event_id = data['event_id']
+        refund_type = data.get('refund_type', 'voluntary')
 
         print(f"[Payment] Processing refund for booking {booking_id}, amount {refund_amount}")
 
@@ -305,7 +306,8 @@ def handle_refund_process(ch, method, properties, body):
                         'refund_amount': float(refund_amount),
                         'original_amount': float(original_amount),
                         'service_fee': float(service_fee),
-                        'event_id': event_id
+                        'event_id': event_id,
+                        'refund_type': refund_type
                     })
                     print(f"[Payment] Refund succeeded for booking {booking_id}")
                     return  # Success - exit

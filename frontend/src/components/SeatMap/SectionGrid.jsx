@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ArrowLeft, Check } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useOutletContext } from 'react-router-dom';
 import { api } from '../../api/client.js';
 import LoadingSpinner from '../ui/LoadingSpinner.jsx';
 
@@ -12,6 +12,8 @@ const STATUS_COLORS = {
 };
 
 export default function SectionGrid({ eventId, section, onBack }) {
+  const { userId } = useOutletContext();
+  const isAdmin = userId === 'admin';
   const [seats, setSeats] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -57,6 +59,7 @@ export default function SectionGrid({ eventId, section, onBack }) {
   const sortedRowKeys = Object.keys(rows).sort();
 
   const handleSeatClick = (seat) => {
+    if (isAdmin) return;
     if (seat.status !== 'available') return;
     setSelectedSeat((prev) => (prev?.seat_id === seat.seat_id ? null : seat));
   };
@@ -142,8 +145,16 @@ export default function SectionGrid({ eventId, section, onBack }) {
         </div>
       </div>
 
+      {/* Admin notice */}
+      {isAdmin && (
+        <div className="mt-4 bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-4 text-center">
+          <p className="text-yellow-400 text-sm font-medium">Admin accounts cannot purchase tickets</p>
+          <p className="text-text-secondary text-xs mt-1">Switch to a customer account to book seats.</p>
+        </div>
+      )}
+
       {/* Selection summary */}
-      {selectedSeat && (
+      {selectedSeat && !isAdmin && (
         <div className="mt-4 bg-bg-card rounded-xl p-4 border border-accent/30 flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="text-sm text-text-primary">
             <span className="text-text-secondary">Selected: </span>

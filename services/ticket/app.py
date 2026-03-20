@@ -191,6 +191,22 @@ def get_ticket_by_booking(booking_id):
     return success(data)
 
 
+@app.route('/tickets/booking/<int:booking_id>/invalidate', methods=['POST'])
+def invalidate_ticket_by_booking(booking_id):
+    """Invalidate a valid ticket by booking_id (used during voluntary refunds)."""
+    ticket = Ticket.query.filter_by(booking_id=booking_id, status='valid').first()
+    if not ticket:
+        return error("No valid ticket found for this booking", 404)
+
+    ticket.status = 'invalidated'
+    db.session.commit()
+
+    return success({
+        'ticket_id': ticket.ticket_id,
+        'status': ticket.status
+    })
+
+
 @app.route('/tickets/<int:ticket_id>')
 def get_ticket_by_id(ticket_id):
     """Retrieve ticket by ticket_id with base64 QR image."""

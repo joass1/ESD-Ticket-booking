@@ -250,7 +250,8 @@ def handle_event_cancelled(ch, method, properties, body):
                     'user_id': booking.user_id,
                     'email': booking.email,
                     'amount': float(booking.amount),
-                    'event_id': event_id
+                    'event_id': event_id,
+                    'refund_type': 'event_cancelled'
                 })
 
             print(f"[Booking] Updated {len(bookings)} bookings to pending_refund")

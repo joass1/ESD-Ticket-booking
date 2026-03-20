@@ -114,10 +114,16 @@ def handle_refund_request(ch, method, properties, body):
 
         print(f"[Charging] Received refund request for booking {booking_id}, amount {amount}")
 
+        refund_type = data.get('refund_type', 'voluntary')
+
         with app.app_context():
             original_amount = Decimal(str(amount))
-            service_fee = (original_amount * Decimal('0.10')).quantize(Decimal('0.01'))
-            refund_amount = (original_amount - service_fee).quantize(Decimal('0.01'))
+            if refund_type == 'event_cancelled':
+                service_fee = Decimal('0.00')
+                refund_amount = original_amount
+            else:
+                service_fee = (original_amount * Decimal('0.10')).quantize(Decimal('0.01'))
+                refund_amount = (original_amount - service_fee).quantize(Decimal('0.01'))
 
             # Create fee record
             fee_record = ServiceFee(
@@ -143,7 +149,8 @@ def handle_refund_request(ch, method, properties, body):
                 'refund_amount': float(refund_amount),
                 'original_amount': float(original_amount),
                 'service_fee': float(service_fee),
-                'event_id': event_id
+                'event_id': event_id,
+                'refund_type': refund_type
             })
 
             print(f"[Charging] Processed refund for booking {booking_id}: "

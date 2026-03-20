@@ -52,6 +52,7 @@ EVENT_SERVICE_URL = os.environ.get('EVENT_SERVICE_URL', 'http://event:5001')
 SEAT_SERVICE_URL = os.environ.get('SEAT_SERVICE_URL', 'http://seat:5003')
 PAYMENT_SERVICE_URL = os.environ.get('PAYMENT_SERVICE_URL', 'http://payment:5004')
 BOOKING_SERVICE_URL = os.environ.get('BOOKING_SERVICE_URL', 'http://booking:5002')
+TICKET_SERVICE_URL = os.environ.get('TICKET_SERVICE_URL', 'http://ticket:5006')
 
 # AMQP connection for publishing (dedicated connection, separate from consumer threads)
 amqp_channel = None
@@ -190,6 +191,10 @@ def initiate_booking():
     event_id = data['event_id']
     seat_id = data['seat_id']
     email = data['email']
+
+    # ---- Admin Guard ----
+    if user_id == 'admin':
+        return error("Admin users are not allowed to purchase tickets", 403)
 
     # Create saga log entry
     saga_id = str(uuid.uuid4())
@@ -445,6 +450,128 @@ def confirm_booking():
         'status': 'confirmed',
         'booking_id': saga.booking_id
     })
+
+
+@app.route('/bookings/<int:booking_id>/refund', methods=['POST'])
+def request_refund(booking_id):
+    """User-initiated voluntary refund: validate ownership, 24h cutoff, then process."""
+    data = request.get_json()
+    if not data:
+        return error("Invalid JSON", 400)
+
+    user_id = data.get('user_id')
+    if not user_id:
+        return error("Missing required field: user_id", 400)
+
+    # ---- Step 1: Get booking and validate ----
+    try:
+        booking_resp = requests.get(
+            f"{BOOKING_SERVICE_URL}/bookings/{booking_id}",
+            timeout=10
+        )
+        if booking_resp.status_code != 200:
+            return error("Booking not found", 404)
+
+        booking = booking_resp.json().get('data', {})
+
+        if booking.get('user_id') != user_id:
+            return error("You do not own this booking", 403)
+
+        if booking.get('status') != 'confirmed':
+            return error(f"Cannot refund booking with status '{booking.get('status')}'", 409)
+
+    except requests.exceptions.RequestException as e:
+        return error(f"Booking service unreachable: {str(e)}", 503)
+
+    # ---- Step 2: Check 24h cutoff ----
+    try:
+        event_resp = requests.get(
+            f"{EVENT_SERVICE_URL}/events/{booking['event_id']}",
+            timeout=10
+        )
+        if event_resp.status_code != 200:
+            return error("Event not found", 404)
+
+        event_data = event_resp.json().get('data', {})
+        event_date_str = event_data.get('event_date') or event_data.get('start_date')
+
+        if event_date_str:
+            event_date = datetime.fromisoformat(event_date_str.replace('Z', '+00:00'))
+            now = datetime.utcnow().replace(tzinfo=event_date.tzinfo)
+            if (event_date - now) < timedelta(hours=24):
+                return error("Cannot refund within 24 hours of event start", 409)
+
+    except requests.exceptions.RequestException as e:
+        return error(f"Event service unreachable: {str(e)}", 503)
+
+    # ---- Step 3: Update booking to pending_refund ----
+    try:
+        update_resp = requests.put(
+            f"{BOOKING_SERVICE_URL}/bookings/{booking_id}",
+            json={'status': 'pending_refund'},
+            timeout=10
+        )
+        if update_resp.status_code != 200:
+            return error("Failed to update booking status", 500)
+    except requests.exceptions.RequestException as e:
+        return error(f"Booking service unreachable: {str(e)}", 503)
+
+    # ---- Steps 4-6: Release seat, invalidate ticket, publish refund (with compensation) ----
+    try:
+        # Step 4: Release seat (triggers waitlist cascade via seat.released AMQP)
+        requests.post(
+            f"{SEAT_SERVICE_URL}/seats/release",
+            json={
+                'event_id': booking['event_id'],
+                'seat_id': booking['seat_id'],
+                'user_id': user_id
+            },
+            timeout=10
+        )
+
+        # Step 5: Invalidate ticket
+        try:
+            requests.post(
+                f"{TICKET_SERVICE_URL}/tickets/booking/{booking_id}/invalidate",
+                timeout=10
+            )
+        except Exception as e:
+            print(f"[Refund] Ticket invalidation warning for booking {booking_id}: {e}")
+
+        # Step 6: Publish refund request
+        amount = float(booking.get('amount', 0))
+        service_fee = round(amount * 0.10, 2)
+        net_refund = round(amount - service_fee, 2)
+
+        publish_booking_event('booking.refund.requested', {
+            'booking_id': booking_id,
+            'user_id': user_id,
+            'email': booking.get('email', ''),
+            'amount': amount,
+            'event_id': booking['event_id'],
+            'refund_type': 'voluntary'
+        })
+
+        return success({
+            'booking_id': booking_id,
+            'status': 'pending_refund',
+            'original_amount': amount,
+            'service_fee': service_fee,
+            'net_refund': net_refund
+        })
+
+    except Exception as e:
+        # Compensation: roll back booking status to confirmed
+        print(f"[Refund] Error during refund processing for booking {booking_id}: {e}")
+        try:
+            requests.put(
+                f"{BOOKING_SERVICE_URL}/bookings/{booking_id}",
+                json={'status': 'confirmed'},
+                timeout=10
+            )
+        except Exception as comp_err:
+            print(f"[Refund] Compensation failed for booking {booking_id}: {comp_err}")
+        return error(f"Refund processing failed: {str(e)}", 500)
 
 
 @app.route('/sagas/<string:saga_id>')

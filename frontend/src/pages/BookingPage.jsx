@@ -22,6 +22,7 @@ export default function BookingPage() {
   const { userId } = useOutletContext();
   const navigate = useNavigate();
 
+  const isAdmin = userId === 'admin';
   const seatId = searchParams.get('seatId');
   const sectionId = searchParams.get('sectionId');
 
@@ -147,6 +148,22 @@ export default function BookingPage() {
   const handleBack = () => {
     navigate(`/events/${eventId}`);
   };
+
+  // Block admin users from accessing the booking page
+  if (isAdmin) {
+    return (
+      <div className="max-w-lg mx-auto text-center py-12 space-y-4">
+        <p className="text-yellow-400 font-medium">Admin accounts cannot purchase tickets</p>
+        <p className="text-text-secondary text-sm">Switch to a customer account to book seats.</p>
+        <button
+          onClick={handleBack}
+          className="px-6 py-2 bg-accent hover:bg-accent-hover text-white rounded-lg text-sm font-medium transition-colors"
+        >
+          Back to Event
+        </button>
+      </div>
+    );
+  }
 
   if (loading) {
     return (
