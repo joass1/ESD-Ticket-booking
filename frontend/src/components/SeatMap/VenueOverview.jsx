@@ -4,8 +4,8 @@ import LoadingSpinner from '../ui/LoadingSpinner.jsx';
 
 const TIER_COLORS = {
   VIP: { bg: '#f59e0b', border: '#fbbf24', label: 'VIP' },
-  CAT1: { bg: '#d97706', border: '#fbbf24', label: 'CAT 1' },
-  CAT2: { bg: '#b45309', border: '#d97706', label: 'CAT 2' },
+  CAT1: { bg: '#3b82f6', border: '#60a5fa', label: 'CAT 1' },
+  CAT2: { bg: '#10b981', border: '#34d399', label: 'CAT 2' },
 };
 
 function getTier(name) {

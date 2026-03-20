@@ -11,31 +11,42 @@ export default function useSocket(bookingId) {
   useEffect(() => {
     if (!bookingId) return;
 
-    const socket = io(TICKET_SERVICE_URL, {
-      transports: ['websocket', 'polling'],
-    });
-    socketRef.current = socket;
+    let cancelled = false;
 
-    socket.on('connect', () => {
-      setConnected(true);
-      socket.emit('join', { booking_id: bookingId });
-    });
+    // Defer connection to next tick — React StrictMode's synchronous
+    // unmount+remount cancels this timeout before a socket is created,
+    // preventing the "closed before established" WebSocket error.
+    const timerId = setTimeout(() => {
+      if (cancelled) return;
 
-    socket.on('disconnect', () => {
-      setConnected(false);
-    });
+      const socket = io(TICKET_SERVICE_URL, {
+        transports: ['websocket', 'polling'],
+      });
+      socketRef.current = socket;
 
-    socket.on('ticket_ready', (data) => {
-      if (data.booking_id === bookingId || data.booking_id == bookingId) {
-        setTicketReady(true);
-      }
-    });
+      socket.on('connect', () => {
+        setConnected(true);
+        socket.emit('join', { booking_id: bookingId });
+      });
+
+      socket.on('disconnect', () => {
+        if (!cancelled) setConnected(false);
+      });
+
+      socket.on('ticket_ready', (data) => {
+        if (!cancelled && (data.booking_id === bookingId || data.booking_id == bookingId)) {
+          setTicketReady(true);
+        }
+      });
+    }, 0);
 
     return () => {
-      socket.disconnect();
-      socketRef.current = null;
-      setConnected(false);
-      setTicketReady(false);
+      cancelled = true;
+      clearTimeout(timerId);
+      if (socketRef.current) {
+        socketRef.current.disconnect();
+        socketRef.current = null;
+      }
     };
   }, [bookingId]);
 

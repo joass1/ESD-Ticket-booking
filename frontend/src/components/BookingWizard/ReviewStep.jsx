@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import { CalendarDays, MapPin, Armchair, Tag } from 'lucide-react';
+import { CalendarDays, MapPin, Armchair, Tag, Phone } from 'lucide-react';
 
 export default function ReviewStep({ event, seat, section, onConfirm, onBack }) {
   const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
 
   const eventDate = event?.event_date
     ? new Date(event.event_date).toLocaleDateString('en-US', {
@@ -17,8 +18,8 @@ export default function ReviewStep({ event, seat, section, onConfirm, onBack }) 
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    if (!email.trim()) return;
-    onConfirm(email.trim());
+    if (!email.trim() || !phone.trim()) return;
+    onConfirm(email.trim(), phone.trim());
   };
 
   return (
@@ -71,20 +72,36 @@ export default function ReviewStep({ event, seat, section, onConfirm, onBack }) 
         </div>
       </div>
 
-      {/* Email input */}
-      <div className="space-y-2">
-        <label htmlFor="email" className="block text-sm font-medium text-text-secondary">
-          Email for e-ticket delivery
-        </label>
-        <input
-          id="email"
-          type="email"
-          required
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          placeholder="you@example.com"
-          className="w-full px-4 py-3 bg-bg-card border border-white/10 rounded-lg text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:ring-2 focus:ring-accent"
-        />
+      {/* Contact details */}
+      <div className="space-y-4">
+        <div className="space-y-2">
+          <label htmlFor="email" className="block text-sm font-medium text-text-secondary">
+            Email for e-ticket delivery
+          </label>
+          <input
+            id="email"
+            type="email"
+            required
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="you@example.com"
+            className="w-full px-4 py-3 bg-bg-card border border-white/10 rounded-lg text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:ring-2 focus:ring-accent"
+          />
+        </div>
+        <div className="space-y-2">
+          <label htmlFor="phone" className="block text-sm font-medium text-text-secondary">
+            Phone number for SMS notifications
+          </label>
+          <input
+            id="phone"
+            type="tel"
+            required
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
+            placeholder="+65 9123 4567"
+            className="w-full px-4 py-3 bg-bg-card border border-white/10 rounded-lg text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:ring-2 focus:ring-accent"
+          />
+        </div>
       </div>
 
       <div className="flex flex-col gap-3">

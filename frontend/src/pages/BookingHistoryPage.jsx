@@ -31,13 +31,15 @@ function BookingCard({ booking, userId, onRefundSuccess }) {
   const [refundLoading, setRefundLoading] = useState(false);
   const [refundError, setRefundError] = useState(null);
 
-  useEffect(() => {
-    if (booking.status === 'refunded' || booking.status === 'pending_refund') {
-      api(`/api/charging/booking/${booking.booking_id}`)
-        .then((data) => setRefundInfo(data))
-        .catch(() => setRefundInfo(null));
+  const fetchRefundInfo = async () => {
+    if (refundInfo) return;
+    try {
+      const data = await api(`/api/charging/booking/${booking.booking_id}`);
+      setRefundInfo(data);
+    } catch {
+      setRefundInfo(null);
     }
-  }, [booking.status, booking.booking_id]);
+  };
 
   const handleViewTicket = async () => {
     if (ticket) {
@@ -166,6 +168,15 @@ function BookingCard({ booking, userId, onRefundSuccess }) {
             Status: {ticket.status || 'valid'}
           </p>
         </div>
+      )}
+
+      {(booking.status === 'refunded' || booking.status === 'pending_refund') && !refundInfo && (
+        <button
+          onClick={fetchRefundInfo}
+          className="w-full text-sm text-primary hover:text-primary/80 transition-colors py-2"
+        >
+          View Refund Details
+        </button>
       )}
 
       {(booking.status === 'refunded' || booking.status === 'pending_refund') && refundInfo && (

@@ -201,6 +201,7 @@ CREATE TABLE IF NOT EXISTS saga_log (
     booking_id INT NULL,
     payment_intent_id VARCHAR(255) NULL,
     email VARCHAR(255) NOT NULL,
+    phone VARCHAR(20) NULL,
     amount DECIMAL(10, 2) NULL,
     status ENUM('STARTED', 'SEAT_RESERVED', 'PAYMENT_PENDING', 'PAYMENT_SUCCESS', 'CONFIRMED', 'FAILED', 'TIMEOUT') DEFAULT 'STARTED',
     error_message TEXT NULL,

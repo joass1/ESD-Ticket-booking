@@ -85,7 +85,7 @@ export default function BookingPage() {
   }, [eventId, seatId, sectionId]);
 
   // Initiate saga (Review -> Payment)
-  const handleReviewConfirm = async (email) => {
+  const handleReviewConfirm = async (email, phone) => {
     setProcessing(true);
     setProcessingMsg(PROCESSING_MESSAGES[0]);
     setError(null);
@@ -98,6 +98,7 @@ export default function BookingPage() {
           event_id: Number(eventId),
           seat_id: Number(seatId),
           email,
+          phone,
         }),
       });
 

@@ -11,10 +11,10 @@ const stripePromise = loadStripe(
 
 const CARD_STYLE = {
   base: {
-    color: '#262626',
+    color: '#e5e5e5',
     fontFamily: 'system-ui, sans-serif',
     fontSize: '16px',
-    '::placeholder': { color: '#6b7280' },
+    '::placeholder': { color: '#a3a3a3' },
   },
   invalid: { color: '#ef4444' },
 };

@@ -105,6 +105,7 @@ class SagaLog(db.Model):
     booking_id = db.Column(db.Integer, nullable=True)
     payment_intent_id = db.Column(db.String(255), nullable=True)
     email = db.Column(db.String(255), nullable=False)
+    phone = db.Column(db.String(20), nullable=True)
     amount = db.Column(db.Numeric(10, 2), nullable=True)
     status = db.Column(db.String(20), default='STARTED')
     error_message = db.Column(db.Text, nullable=True)
@@ -191,6 +192,7 @@ def initiate_booking():
     event_id = data['event_id']
     seat_id = data['seat_id']
     email = data['email']
+    phone = data.get('phone', '')
 
     # ---- Admin Guard ----
     if user_id == 'admin':
@@ -204,6 +206,7 @@ def initiate_booking():
         event_id=event_id,
         seat_id=seat_id,
         email=email,
+        phone=phone,
         status='STARTED',
         expires_at=datetime.utcnow() + timedelta(minutes=10)
     )
@@ -441,6 +444,7 @@ def confirm_booking():
         'event_id': saga.event_id,
         'seat_id': saga.seat_id,
         'email': saga.email,
+        'phone': saga.phone or '',
         'amount': float(saga.amount) if saga.amount else 0,
         'payment_intent_id': payment_intent_id
     })

@@ -58,7 +58,7 @@ NOTI_HEADERS = {
 # ============================================
 
 EVENT_CHANNEL_MAP = {
-    'booking.confirmed': ['email'],           # NOTF-01
+    'booking.confirmed': ['email', 'sms'],     # NOTF-01
     'booking.timeout': ['email'],             # NOTF-02
     'booking.refund.requested': ['email'],    # Cancellation email to user
     'waitlist.promoted': ['email', 'sms'],    # NOTF-03
@@ -240,7 +240,13 @@ def get_email_template(event_type, data):
 
 def get_sms_template(event_type, data):
     """Return SMS body text for a given event type."""
-    if event_type == 'waitlist.promoted':
+    if event_type == 'booking.confirmed':
+        booking_id = data.get('booking_id', 'N/A')
+        event_name = data.get('event_name', 'N/A')
+        seats = data.get('seats', [])
+        seat_info = ', '.join(f"{s.get('section', '')} Seat {s.get('seat_number', '')}" for s in seats) if seats else 'N/A'
+        return f"Booking #{booking_id} confirmed for {event_name}! Seats: {seat_info}. Check your email for your e-ticket and QR code."
+    elif event_type == 'waitlist.promoted':
         event_id = data.get('event_id', 'N/A')
         return f"A seat is now available for Event #{event_id}! Book within 10 minutes before the offer expires."
     else:
