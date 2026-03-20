@@ -224,11 +224,8 @@ services:
       DB_NAME: notification_db
       RABBITMQ_HOST: rabbitmq
       PORT: "5005"
-      GMAIL_USER: ${GMAIL_USER:-}
-      GMAIL_APP_PASSWORD: ${GMAIL_APP_PASSWORD:-}
-      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
-      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
-      TWILIO_PHONE_NUMBER: ${TWILIO_PHONE_NUMBER:-}
+      SMU_NOTI_BASE_URL: ${SMU_NOTI_BASE_URL:-https://smuedu-dev.outsystemsenterprise.com/SMULab_Notification/rest/Notification}
+      SMU_NOTI_API_KEY: ${SMU_NOTI_API_KEY:-4e46111f-f4a9-443b-bc63-cd0d52437c04}
     ports:
       - "5005:5005"
     volumes:
@@ -348,6 +345,7 @@ services:
       DB_NAME: saga_log_db
       RABBITMQ_HOST: rabbitmq
       EVENT_SERVICE_URL: http://event:5001
+      TICKET_SERVICE_URL: http://ticket:5006
       PORT: "5010"
     ports:
       - "5010:5010"
