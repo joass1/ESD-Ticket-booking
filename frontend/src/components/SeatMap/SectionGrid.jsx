@@ -5,10 +5,10 @@ import { api } from '../../api/client.js';
 import LoadingSpinner from '../ui/LoadingSpinner.jsx';
 
 const STATUS_COLORS = {
-  available: '#00b894',
-  reserved: '#e17055',
-  booked: '#e17055',
-  selected: '#ffd700',
+  available: '#22c55e',
+  reserved: '#ef4444',
+  booked: '#ef4444',
+  selected: '#f59e0b',
 };
 
 export default function SectionGrid({ eventId, section, onBack }) {

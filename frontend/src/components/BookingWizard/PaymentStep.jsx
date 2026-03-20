@@ -11,12 +11,12 @@ const stripePromise = loadStripe(
 
 const CARD_STYLE = {
   base: {
-    color: '#ffffff',
+    color: '#262626',
     fontFamily: 'system-ui, sans-serif',
     fontSize: '16px',
-    '::placeholder': { color: '#a0a0b0' },
+    '::placeholder': { color: '#6b7280' },
   },
-  invalid: { color: '#e17055' },
+  invalid: { color: '#ef4444' },
 };
 
 function PaymentForm({ clientSecret, amount, expiresAt, onPaymentSuccess, onPaymentError }) {

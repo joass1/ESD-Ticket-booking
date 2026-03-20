@@ -3,9 +3,9 @@ import { api } from '../../api/client.js';
 import LoadingSpinner from '../ui/LoadingSpinner.jsx';
 
 const TIER_COLORS = {
-  VIP: { bg: '#6c5ce7', border: '#a29bfe', label: 'VIP' },
-  CAT1: { bg: '#e17055', border: '#fab1a0', label: 'CAT 1' },
-  CAT2: { bg: '#00b894', border: '#55efc4', label: 'CAT 2' },
+  VIP: { bg: '#f59e0b', border: '#fbbf24', label: 'VIP' },
+  CAT1: { bg: '#d97706', border: '#fbbf24', label: 'CAT 1' },
+  CAT2: { bg: '#b45309', border: '#d97706', label: 'CAT 2' },
 };
 
 function getTier(name) {
