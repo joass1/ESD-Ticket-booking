@@ -3,11 +3,19 @@ _transform: true
 
 services:
   - name: event-service
-    url: http://event:5001/events
+    url: https://personal-fptjqc79.outsystemscloud.com/ESDTicketBookingServices/rest/EventService/events
     routes:
       - name: event-routes
         paths:
           - /api/events
+        strip_path: true
+
+  - name: event-detail-service
+    url: https://personal-fptjqc79.outsystemscloud.com/ESDTicketBookingServices/rest/EventService
+    routes:
+      - name: event-detail-routes
+        paths:
+          - /api/event
         strip_path: true
 
   - name: booking-service
