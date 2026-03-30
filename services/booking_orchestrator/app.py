@@ -4,17 +4,20 @@ sys.path.insert(0, '/app')
 import os
 import json
 import uuid
+import threading
 import requests
 from flask import Flask, request, g
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from shared.response import success, error
-from shared.amqp_lib import connect_with_retry, setup_exchange, publish_message
+from shared.amqp_lib import connect_with_retry, setup_exchange, publish_message, start_consumer
 from datetime import datetime, timedelta
 from decimal import Decimal
 from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
+from werkzeug.middleware.proxy_fix import ProxyFix
+app.wsgi_app = ProxyFix(app.wsgi_app, x_host=1)
 CORS(app)
 
 
@@ -60,9 +63,21 @@ try:
     amqp_connection = connect_with_retry()
     amqp_channel = amqp_connection.channel()
     setup_exchange(amqp_channel, 'booking_topic', 'topic')
+    setup_exchange(amqp_channel, 'event_lifecycle', 'topic')
     print("[Orchestrator] AMQP publishing channel ready")
 except Exception as e:
     print(f"[Orchestrator] AMQP connection failed (will retry on publish): {e}")
+
+
+def _ensure_amqp_channel():
+    """Ensure the AMQP channel is open, reconnecting if needed."""
+    global amqp_channel
+    if amqp_channel is None or amqp_channel.is_closed:
+        conn = connect_with_retry()
+        amqp_channel = conn.channel()
+        setup_exchange(amqp_channel, 'booking_topic', 'topic')
+        setup_exchange(amqp_channel, 'event_lifecycle', 'topic')
+    return amqp_channel
 
 
 def publish_booking_event(routing_key, payload, _retried=False):
@@ -73,20 +88,33 @@ def publish_booking_event(routing_key, payload, _retried=False):
     """
     global amqp_channel
     try:
-        if amqp_channel is None or amqp_channel.is_closed:
-            conn = connect_with_retry()
-            amqp_channel = conn.channel()
-            setup_exchange(amqp_channel, 'booking_topic', 'topic')
+        _ensure_amqp_channel()
         publish_message(amqp_channel, 'booking_topic', routing_key, json.dumps(payload))
         print(f"[Orchestrator] Published {routing_key}: {payload.get('saga_id', 'unknown')}",
               flush=True)
     except Exception as e:
         print(f"[Orchestrator] Publish failed for {routing_key}: {e}", flush=True)
         if not _retried:
-            # Connection likely went stale; force reconnect and retry once
             print("[Orchestrator] Reconnecting to AMQP and retrying...", flush=True)
             amqp_channel = None
             publish_booking_event(routing_key, payload, _retried=True)
+        else:
+            print(f"[Orchestrator] Retry also failed for {routing_key}: {e}", flush=True)
+
+
+def publish_event_lifecycle(routing_key, payload, _retried=False):
+    """Publish an event lifecycle message to event_lifecycle exchange."""
+    global amqp_channel
+    try:
+        _ensure_amqp_channel()
+        publish_message(amqp_channel, 'event_lifecycle', routing_key, json.dumps(payload))
+        print(f"[Orchestrator] Published {routing_key}: event_id={payload.get('event_id')}",
+              flush=True)
+    except Exception as e:
+        print(f"[Orchestrator] Publish failed for {routing_key}: {e}", flush=True)
+        if not _retried:
+            amqp_channel = None
+            publish_event_lifecycle(routing_key, payload, _retried=True)
         else:
             print(f"[Orchestrator] Retry also failed for {routing_key}: {e}", flush=True)
 
@@ -216,7 +244,7 @@ def initiate_booking():
     # ---- Step 0: Check Event Status ----
     try:
         event_resp = requests.get(
-            f"{EVENT_SERVICE_URL}/events/{event_id}",
+            f"{EVENT_SERVICE_URL}/{event_id}",
             timeout=10
         )
         if event_resp.status_code != 200:
@@ -226,7 +254,8 @@ def initiate_booking():
             return error(f"Event not found", 404)
 
         event_data = event_resp.json().get('data', {})
-        event_status = event_data.get('status', '')
+        # Support both OutSystems PascalCase and legacy snake_case
+        event_status = event_data.get('Status') or event_data.get('status') or 'upcoming'
 
         if event_status == 'cancelled':
             saga.status = 'FAILED'
@@ -490,14 +519,15 @@ def request_refund(booking_id):
     # ---- Step 2: Check 24h cutoff ----
     try:
         event_resp = requests.get(
-            f"{EVENT_SERVICE_URL}/events/{booking['event_id']}",
+            f"{EVENT_SERVICE_URL}/{booking['event_id']}",
             timeout=10
         )
         if event_resp.status_code != 200:
             return error("Event not found", 404)
 
         event_data = event_resp.json().get('data', {})
-        event_date_str = event_data.get('event_date') or event_data.get('start_date')
+        # Support both OutSystems PascalCase and legacy snake_case
+        event_date_str = event_data.get('EventDate') or event_data.get('event_date') or event_data.get('start_date')
 
         if event_date_str:
             event_date = datetime.fromisoformat(event_date_str.replace('Z', '+00:00'))
@@ -592,6 +622,107 @@ def get_saga(saga_id):
 
 
 # ============================================
+# Event Cancel (bridge OutSystems -> RabbitMQ)
+# ============================================
+
+@app.route('/events/<int:event_id>/cancel', methods=['POST'])
+def cancel_event(event_id):
+    """Cancel an event via OutSystems and publish event.cancelled to RabbitMQ.
+
+    OutSystems cannot publish to RabbitMQ, so the orchestrator acts as a bridge:
+    1. Verify the event exists and is cancellable (status: upcoming/ongoing)
+    2. Call OutSystems POST /events/{id}/cancel to update status
+    3. Publish event.cancelled.{event_id} to event_lifecycle exchange
+    """
+    # ---- Step 1: Get event and validate status ----
+    try:
+        event_resp = requests.get(
+            f"{EVENT_SERVICE_URL}/{event_id}",
+            timeout=10
+        )
+        if event_resp.status_code != 200:
+            return error("Event not found", 404)
+
+        event_data = event_resp.json().get('data', {})
+        event_status = event_data.get('Status') or event_data.get('status') or 'upcoming'
+        event_name = event_data.get('Name') or event_data.get('name', '')
+
+        if event_status not in ('upcoming', 'ongoing'):
+            return error(f"Event cannot be cancelled (status: {event_status})", 409)
+
+    except requests.exceptions.RequestException as e:
+        return error(f"Event service unreachable: {str(e)}", 503)
+
+    # ---- Step 2: Call OutSystems to cancel the event ----
+    try:
+        cancel_resp = requests.post(
+            f"{EVENT_SERVICE_URL}/cancel/{event_id}",
+            json={},
+            timeout=10
+        )
+        if cancel_resp.status_code != 200:
+            return error(f"Failed to cancel event in OutSystems: {cancel_resp.text}", 500)
+
+    except requests.exceptions.RequestException as e:
+        return error(f"Event service unreachable: {str(e)}", 503)
+
+    # ---- Step 3: Publish event.cancelled to RabbitMQ ----
+    publish_event_lifecycle(f'event.cancelled.{event_id}', {
+        'event_id': event_id,
+        'event_name': event_name
+    })
+
+    return success({'event_id': event_id, 'status': 'cancelled'})
+
+
+# ============================================
+# AMQP Consumer: seat.availability.updated
+# ============================================
+
+def handle_availability_updated(ch, method, properties, body):
+    """Sync AvailableSeats in OutSystems when the Seat service reports a change.
+
+    The old Python event service consumed this message directly. Since OutSystems
+    cannot consume AMQP, the orchestrator bridges the message to an HTTP PUT call.
+    """
+    try:
+        msg = json.loads(body)
+        event_id = msg['event_id']
+        available_seats = msg['available_seats']
+
+        print(f"[Orchestrator] Availability update: event={event_id} available={available_seats}",
+              flush=True)
+
+        resp = requests.put(
+            f"{EVENT_SERVICE_URL}/update/{event_id}",
+            json={'AvailableSeats': available_seats},
+            timeout=10
+        )
+        if resp.status_code == 200:
+            print(f"[Orchestrator] Synced available_seats={available_seats} to OutSystems for event {event_id}",
+                  flush=True)
+        else:
+            print(f"[Orchestrator] Failed to sync availability for event {event_id}: {resp.status_code}",
+                  flush=True)
+
+    except Exception as e:
+        print(f"[Orchestrator] Error handling availability update: {e}", flush=True)
+    finally:
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+
+
+def start_orchestrator_consumers():
+    """Start AMQP consumer threads for the orchestrator."""
+    threading.Thread(
+        target=lambda: start_consumer(
+            'event_availability_queue', 'seat_topic',
+            ['seat.availability.updated'], handle_availability_updated
+        ), daemon=True
+    ).start()
+    print("[Orchestrator] Started seat.availability.updated consumer thread")
+
+
+# ============================================
 # APScheduler: Payment Expiry Detection
 # ============================================
 
@@ -651,4 +782,5 @@ if os.environ.get('WERKZEUG_RUN_MAIN') != 'false':
 
 
 if __name__ == '__main__':
+    start_orchestrator_consumers()
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5010)), debug=False)

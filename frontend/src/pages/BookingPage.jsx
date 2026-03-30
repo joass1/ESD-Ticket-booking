@@ -45,7 +45,7 @@ export default function BookingPage() {
       setError(null);
       try {
         const [eventData, seatsData] = await Promise.all([
-          api(`/api/events/${eventId}`),
+          api(`/api/event/${eventId}`),
           api(`/api/seats/event/${eventId}`),
         ]);
         setEvent(eventData);

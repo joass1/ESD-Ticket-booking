@@ -68,57 +68,59 @@ services:
       timeout: 10s
       retries: 10
     depends_on:
-      event:
-        condition: service_healthy
-      booking:
-        condition: service_healthy
-      seat:
-        condition: service_healthy
-      payment:
-        condition: service_healthy
-      notification:
-        condition: service_healthy
-      ticket:
-        condition: service_healthy
-      waitlist:
-        condition: service_healthy
-      charging:
-        condition: service_healthy
-      booking_orchestrator:
-        condition: service_healthy
+    - mysql
+    - rabbitmq
+      # event:
+      #   condition: service_healthy
+      # booking:
+      #   condition: service_healthy
+      # seat:
+      #   condition: service_healthy
+      # payment:
+      #   condition: service_healthy
+      # notification:
+      #   condition: service_healthy
+      # ticket:
+      #   condition: service_healthy
+      # waitlist:
+      #   condition: service_healthy
+      # charging:
+      #   condition: service_healthy
+      # booking_orchestrator:
+      #   condition: service_healthy
 
   # ============================================
   # Microservices
   # ============================================
 
-  event:
-    build:
-      context: .
-      dockerfile: services/event/Dockerfile
-    container_name: event
-    environment:
-      DB_HOST: mysql
-      DB_PORT: "3306"
-      DB_USER: root
-      DB_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
-      DB_NAME: event_db
-      RABBITMQ_HOST: rabbitmq
-      PORT: "5001"
-    ports:
-      - "5001:5001"
-    volumes:
-      - ./shared:/app/shared
-    depends_on:
-      mysql:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5001/health')\""]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 15s
+  # event:
+  #   build:
+  #     context: .
+  #     dockerfile: services/event/Dockerfile
+  #   container_name: event
+  #   environment:
+  #     DB_HOST: mysql
+  #     DB_PORT: "3306"
+  #     DB_USER: root
+  #     DB_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+  #     DB_NAME: event_db
+  #     RABBITMQ_HOST: rabbitmq
+  #     PORT: "5001"
+    # ports:
+    #   - "5001:5001"
+    # volumes:
+    #   - ./shared:/app/shared
+    # depends_on:
+    #   mysql:
+    #     condition: service_healthy
+    #   rabbitmq:
+    #     condition: service_healthy
+    # healthcheck:
+    #   test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5001/health')\""]
+    #   interval: 10s
+    #   timeout: 5s
+    #   retries: 5
+    #   start_period: 15s
 
   booking:
     build:
@@ -338,13 +340,14 @@ services:
       dockerfile: services/booking_orchestrator/Dockerfile
     container_name: booking_orchestrator
     environment:
+      
       DB_HOST: mysql
       DB_PORT: "3306"
       DB_USER: root
       DB_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
       DB_NAME: saga_log_db
       RABBITMQ_HOST: rabbitmq
-      EVENT_SERVICE_URL: http://event:5001
+      EVENT_SERVICE_URL: https://personal-fptjqc79.outsystemscloud.com/ESDTicketBookingServices/rest/EventService
       TICKET_SERVICE_URL: http://ticket:5006
       PORT: "5010"
     ports:

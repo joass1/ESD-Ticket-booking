@@ -26,7 +26,7 @@ export default function WaitlistPage() {
       setLoading(true);
       try {
         const [eventData, sectionData] = await Promise.all([
-          api(`/api/events/${eventId}`),
+          api(`/api/event/${eventId}`),
           api(`/api/seats/availability/${eventId}`),
         ]);
         setEvent(eventData);

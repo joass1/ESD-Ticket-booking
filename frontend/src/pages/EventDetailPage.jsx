@@ -24,7 +24,7 @@ export default function EventDetailPage() {
       setLoading(true);
       setError(null);
       try {
-        const data = await api(`/api/events/${eventId}`);
+        const data = await api(`/api/event/${eventId}`);
         setEvent(data);
       } catch (err) {
         setError(err.message || 'Failed to load event');
@@ -54,7 +54,7 @@ export default function EventDetailPage() {
   const handleCancelEvent = async () => {
     setCancelling(true);
     try {
-      await api(`/api/events/${eventId}/cancel`, { method: 'POST' });
+      await api(`/api/orchestrator/events/${eventId}/cancel`, { method: 'POST' });
       setEvent((prev) => ({ ...prev, status: 'cancelled' }));
       setCancelConfirm(false);
     } catch (err) {
