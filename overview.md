@@ -9,8 +9,7 @@
 5. [Architecture Diagrams](#5-architecture-diagrams)
 6. [Kong API Gateway Configuration](#6-kong-api-gateway-configuration)
 7. [OutSystems Recommendation](#7-outsystems-recommendation)
-8. [Kubernetes Assessment](#8-kubernetes-assessment)
-9. [Environment Variables Reference](#9-environment-variables-reference)
+8. [Environment Variables Reference](#8-environment-variables-reference)
 
 ---
 
@@ -40,13 +39,14 @@ The platform supports three primary user scenarios, each demonstrating a differe
 
 2. **Waitlist Promotion (Choreography)** -- When a seat is released, the Waitlist Service reacts to the `seat.released` event, promotes the next user in the FIFO queue, reserves the seat via AMQP, and notifies the user. The promoted user has a 10-minute window to complete booking before the promotion expires and cascades to the next user.
 
-3. **Event Cancellation (Fan-Out)** -- An administrator cancels an event, triggering an `event.cancelled` message on the `event_lifecycle` topic exchange. Multiple services consume this event in parallel: Seat Service releases all seats, Booking Service marks bookings as pending refund, Ticket Service invalidates tickets, Charging Service calculates refund amounts, and Payment Service processes Stripe refunds.
+3. **Event Cancellation (Fan-Out)** -- An administrator cancels an event, triggering an `event.cancelled` message on the `event_lifecycle` topic exchange. Five services consume this event in parallel: Seat Service releases all seats, Booking Service marks bookings as pending refund, Ticket Service invalidates tickets, Waitlist Service cancels all entries, and Notification Service logs the cancellation. The Booking Service then triggers a downstream refund chain through the Charging and Payment services.
 
 ### Beyond-the-Lectures (BTL) Features
 
 - **Kong API Gateway** -- Centralized routing, rate limiting (10 req/s), CORS management
 - **Redis Distributed Locking** -- Dual-lock pattern (Redis SET NX EX + MySQL SELECT FOR UPDATE) for concurrent seat reservation
 - **Flask-SocketIO WebSocket** -- Real-time e-ticket delivery to the browser after booking confirmation
+- **Multi-threading** -- Each service runs Flask HTTP and pika AMQP consumers concurrently using Python daemon threads, enabling simultaneous request handling and event-driven message processing in a single process. APScheduler background threads handle saga timeout detection (Booking Orchestrator, 30s), orphaned seat cleanup (Seat Service, 60s), and waitlist promotion expiry (Waitlist Service, 30s)
 
 ---
 
@@ -282,8 +282,6 @@ Manages a FIFO waitlist queue per event. When a seat is released, the service pr
 | Consumes | `event_lifecycle` (topic) | `event.cancelled.*` | Cancels all waiting/promoted entries for event |
 
 **Queues:** `waitlist_queue`, `waitlist_confirm_queue`, `waitlist_cancel_queue`
-
-**External Dependencies:** Redis 7 (used for promotion expiry TTL tracking)
 
 ---
 
@@ -795,7 +793,7 @@ sequenceDiagram
     Ticket-->>FE: WebSocket: ticket_ready
     Notif-->>User: Email + SMS confirmation
 
-    rect rgb(255, 220, 220)
+    rect rgb(128, 0, 0)
         Note over Orch: COMPENSATION PATH (on timeout)
         Note over Orch: APScheduler detects expired saga
         Orch->>Seat: POST /seats/release
@@ -803,6 +801,46 @@ sequenceDiagram
         Orch-->>Notif: AMQP: booking.timeout
     end
 ```
+
+#### Workflow: Happy Path
+
+**Initiate & Validate**
+
+1. User sends a booking request via HTTP POST /bookings/initiate from the Event Ticketing UI through Kong API Gateway
+2. Kong API Gateway forwards the request to the Booking Orchestrator
+3. Booking Orchestrator validates the event: HTTP GET /events/{event_id} to Event Service, checking that the event status is `upcoming` or `ongoing`
+4. Event Service returns the event data with status: upcoming
+
+**Reserve Seat, Create Booking & Payment**
+
+5. Booking Orchestrator calls HTTP POST /seats/reserve on Seat Service
+6. Seat Service acquires a Redis distributed lock (SET NX EX 600) and then uses MySQL SELECT FOR UPDATE to reserve the seat atomically, returning the seat_id and section price
+7. Booking Orchestrator calls HTTP POST /bookings on Booking Service to create a provisional booking record
+8. Booking Service returns the booking_id with status: pending
+9. Booking Orchestrator calls HTTP POST /payments/create on Payment Service
+10. Payment Service creates a Stripe PaymentIntent via the Stripe API
+11 & 12. Stripe API returns the PaymentIntent + client_secret back to the Payment Service, which stores the transaction and returns it to the Booking Orchestrator
+13 & 14. Booking Orchestrator returns the saga_id, client_secret, and booking_id to the frontend via Kong. The user is redirected to the Stripe payment form with a 10-minute payment window
+
+**Confirm Phase**
+
+15 & 16. After the user completes Stripe payment, the Event Ticketing UI calls HTTP POST /bookings/confirm to the Booking Orchestrator through Kong API Gateway
+17. Booking Orchestrator verifies the payment via HTTP POST /payments/verify to Payment Service
+18 & 19. Payment Service retrieves the PaymentIntent from Stripe and confirms status: succeeded
+20. Booking Orchestrator confirms the seat via HTTP POST /seats/confirm to Seat Service, changing the seat status from `reserved` to `booked` and removing the Redis lock
+21. Booking Orchestrator updates the booking via HTTP PUT /bookings/{id} to Booking Service, setting status: confirmed
+22. Booking Orchestrator publishes `booking.confirmed` to the `booking_topic` exchange via RabbitMQ (AMQP)
+23. Ticket Service consumes `booking.confirmed`, generates a QR code e-ticket (SHA-256 HMAC validation hash), and emits a WebSocket `ticket_ready` event directly to the frontend (bypasses Kong, port 5006)
+24. Notification Service consumes `booking.confirmed` and sends a confirmation email and SMS via the SMU Lab Notification API
+
+#### Workflow: Compensation Path (Timeout or Payment Failure)
+
+APScheduler in the Booking Orchestrator runs every 30 seconds and detects sagas in `PAYMENT_PENDING` status past their 10-minute `expires_at` timestamp.
+
+1. Booking Orchestrator calls HTTP POST /seats/release to Seat Service, which marks the seat as `available` and removes the Redis distributed lock
+2. Booking Orchestrator calls HTTP PUT /bookings/{id} to Booking Service, setting the booking status to `expired` (for timeout) or `failed` (for payment failure)
+3. Booking Orchestrator publishes `booking.timeout` to the `booking_topic` exchange via RabbitMQ (AMQP)
+4. Notification Service consumes `booking.timeout` and sends an expiry notification email via the SMU Lab Notification API
 
 ### 5.3 Scenario 2: Waitlist Promotion (Choreography)
 
@@ -835,7 +873,7 @@ sequenceDiagram
 
     Note over User: User has 10 minutes to complete booking
 
-    rect rgb(255, 220, 220)
+    rect rgb(128, 0, 0)
         Note over Waitlist: EXPIRY CASCADE PATH
         Note over Waitlist: APScheduler (30s interval)<br/>detects promotion_expires_at <= now
         Waitlist->>RMQ: Publish seat.release.request
@@ -848,6 +886,33 @@ sequenceDiagram
         Notif->>User: Email: "Promotion expired"
     end
 ```
+
+#### Workflow: Happy Path (Seat Released -> Promotion)
+
+1. A seat becomes available (via refund, booking cancellation, or orphaned seat cleanup). Seat Service publishes `seat.released.{event_id}` to the `seat_topic` exchange via RabbitMQ (AMQP)
+2. Waitlist Service consumes `seat.released.*` and finds the first user in `waiting` status for that event (FIFO by position)
+3. Waitlist Service sets the user's status to `promoted` with `promotion_expires_at` = now + 10 minutes
+4. Waitlist Service publishes `seat.reserve.request` to the `seat_topic` exchange via RabbitMQ, requesting the Seat Service to reserve the released seat for the promoted user
+5. Seat Service consumes `seat.reserve.request`, acquires the Redis lock and MySQL FOR UPDATE lock, and reserves the seat
+6. Seat Service publishes `seat.reserve.confirmed` to the `seat_topic` exchange via RabbitMQ
+7. Waitlist Service consumes `seat.reserve.confirmed` and records the `promoted_seat_id` on the waitlist entry
+8. Waitlist Service publishes `waitlist.promoted` to the `waitlist_topic` exchange via RabbitMQ
+9. Notification Service consumes `waitlist.promoted` and sends the user an email + SMS via the SMU Lab Notification API, informing them to complete booking within 10 minutes
+
+The promoted user then follows the Scenario 1 booking flow (initiate -> confirm) to complete their purchase.
+
+#### Workflow: Expiry Cascade Path
+
+APScheduler in the Waitlist Service runs every 30 seconds and detects entries with `status=promoted` and `promotion_expires_at <= now`.
+
+1. Waitlist Service sets the expired user's status to `expired`
+2. Waitlist Service publishes `seat.release.request` to the `seat_topic` exchange via RabbitMQ, asking Seat Service to release the reserved seat
+3. Seat Service consumes `seat.release.request`, releases the seat (marks as `available`), and clears the Redis lock
+4. Seat Service publishes `seat.released.{event_id}` back to the `seat_topic` exchange, which triggers the promotion cycle again for the next waiting user (step 1 of Happy Path above)
+5. Waitlist Service publishes `waitlist.expired` to the `waitlist_topic` exchange via RabbitMQ
+6. Notification Service consumes `waitlist.expired` and sends the expired user an email notification
+
+If no more users remain on the waitlist, the seat stays available for direct booking.
 
 ### 5.4 Scenario 3: Event Cancellation (Fan-Out)
 
@@ -913,6 +978,28 @@ sequenceDiagram
     end
 ```
 
+#### Workflow: Fan-Out + Refund Chain
+
+**Fan-Out Phase (Parallel)**
+
+1. Admin calls HTTP POST /events/{id}/cancel on Event Service (via Kong API Gateway)
+2. Event Service sets the event status to `cancelled` in MySQL and publishes `event.cancelled.{event_id}` to the `event_lifecycle` topic exchange via RabbitMQ (AMQP)
+3. Five services consume `event.cancelled.*` in parallel:
+   - **Seat Service:** Bulk-resets all reserved/booked seats to `available` and clears all Redis distributed locks for that event. Publishes `seat.availability.updated` to `seat_topic`
+   - **Booking Service:** Finds all bookings with status `confirmed` for the event, sets each to `pending_refund`, and publishes `booking.refund.requested` to `booking_topic` for each affected booking
+   - **Ticket Service:** Bulk-invalidates all tickets with status `valid` for the event
+   - **Waitlist Service:** Cancels all waitlist entries with status `waiting` or `promoted` for the event
+   - **Notification Service:** Logs the cancellation event to the database (no email sent — the `event.cancelled` payload does not contain individual user information)
+
+**Refund Chain (Sequential)**
+
+4. Charging Service consumes `booking.refund.requested` from `booking_topic`. For event-cancelled refunds, the service fee is 0% (full refund). It calculates the refund amount and publishes `refund.process` to the `refund_direct` exchange via RabbitMQ
+5. Payment Service consumes `refund.process` from `refund_direct` and issues a Stripe refund via the Stripe API with up to 3 retry attempts (1-second delay between retries)
+6. On success, Payment Service publishes `refund.completed` to the `refund_topic` exchange via RabbitMQ. On failure after 3 retries, it publishes `refund.failed` to the `refund_dlq` dead letter exchange for manual intervention
+7. Two services consume `refund.completed` in parallel:
+   - **Booking Service:** Updates the booking status from `pending_refund` to `refunded`
+   - **Notification Service:** Sends a refund confirmation email to the user via the SMU Lab Notification API
+
 ---
 
 ## 6. Kong API Gateway Configuration
@@ -969,7 +1056,7 @@ The **Event Service** is the best candidate for an OutSystems low-code implement
 
 4. **Clear read/write separation.** The OutSystems dashboard reads event listings (GET) and creates/updates events (POST/PUT). This aligns with OutSystems' data fetching patterns (Aggregates for reads, Server Actions for writes).
 
-5. **No real-time requirements.** The Event Service does not require WebSocket connections, Redis distributed locking, or other infrastructure that OutSystems cannot natively handle. The only AMQP interaction (publishing `event.cancelled`) happens server-side and is invisible to the OutSystems frontend.
+5. **No real-time requirements.** The Event Service does not require WebSocket connections, Redis distributed locking, or other infrastructure that OutSystems cannot natively handle. The AMQP interactions (publishing `event.cancelled` and consuming `seat.availability.updated`) happen server-side and are invisible to the OutSystems frontend.
 
 6. **Demonstrates OutSystems triggering complex backend flows.** When an admin cancels an event via the OutSystems interface, the `POST /events/{id}/cancel` endpoint publishes `event.cancelled` to RabbitMQ, which triggers the full fan-out cancellation scenario across all backend services. This demonstrates OutSystems as a low-code frontend driving sophisticated event-driven architecture.
 
@@ -989,42 +1076,8 @@ The team will need to build the OutSystems application and configure REST API in
 
 ---
 
-## 8. Kubernetes Assessment
 
-### Would Kubernetes Count as BTL?
-
-Kubernetes is not part of the IS213 lecture syllabus and would technically qualify as a beyond-the-lectures feature. However, the project already has three strong BTL features (Kong API Gateway, Redis distributed locking, Flask-SocketIO WebSocket), which should be sufficient for grading.
-
-### Is Kubernetes Useful for This Project?
-
-**Short answer: No, for this project it adds complexity without proportional benefit.**
-
-| Factor | Assessment |
-|--------|-----------|
-| **Current deployment** | Docker Compose with 14 containers (9 services + 4 infra + 1 frontend), fully functional |
-| **Deployment target** | Single-machine local demo for IS213 presentation |
-| **Time constraint** | Approximately 2 weeks remaining |
-| **Operational benefit** | Minimal. Kubernetes features (auto-scaling, rolling updates, self-healing) are designed for production multi-node clusters, not local demos |
-| **Complexity cost** | Significant. Requires Deployment + Service YAML for each of the 14 containers, ConfigMaps, Secrets, Ingress controller, PersistentVolumeClaims for MySQL and RabbitMQ |
-
-### If Pursuing Kubernetes Anyway
-
-For teams that want to explore Kubernetes regardless, the minimal setup would require:
-
-- **Tooling:** Minikube or Docker Desktop Kubernetes (single-node cluster)
-- **Per service:** Deployment (replicas, image, env vars) + Service (ClusterIP)
-- **Configuration:** ConfigMap for shared env vars, Secrets for `STRIPE_SECRET_KEY` and `SMU_NOTI_API_KEY`
-- **Networking:** Ingress resource to replace or front Kong, or run Kong as a pod
-- **Storage:** PersistentVolumeClaim for MySQL data and RabbitMQ data
-- **Estimated effort:** 3-5 days for migration and debugging
-
-### Recommendation
-
-**Skip Kubernetes for this project.** The existing Docker Compose setup with Kong, Redis distributed locking, and WebSocket already provides three strong BTL features. Adding Kubernetes would spread the team thin without adding demonstrable value to the three ticketing scenarios. The time is better spent on polishing the UI, writing the report, and preparing the demo.
-
----
-
-## 9. Environment Variables Reference
+## 8. Environment Variables Reference
 
 ### Infrastructure Services
 
@@ -1055,8 +1108,8 @@ All backend services share the following common variables:
 | `STRIPE_SECRET_KEY` | Payment Service | Yes | Stripe API secret key for payment processing |
 | `SMU_NOTI_BASE_URL` | Notification Service | Yes | Base URL for SMU Lab Notification API |
 | `SMU_NOTI_API_KEY` | Notification Service | Yes | API key for SMU Lab Notification API |
-| `REDIS_HOST` | Seat Service, Waitlist Service | No (default: `redis`) | Redis hostname |
-| `REDIS_PORT` | Seat Service, Waitlist Service | No (default: `6379`) | Redis port |
+| `REDIS_HOST` | Seat Service | No (default: `redis`) | Redis hostname |
+| `REDIS_PORT` | Seat Service | No (default: `6379`) | Redis port |
 | `EVENT_SERVICE_URL` | Booking Orchestrator | No (default: `http://event:5001`) | Event Service internal URL |
 | `SEAT_SERVICE_URL` | Booking Orchestrator | No (default: `http://seat:5003`) | Seat Service internal URL |
 | `PAYMENT_SERVICE_URL` | Booking Orchestrator | No (default: `http://payment:5004`) | Payment Service internal URL |
