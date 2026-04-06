@@ -622,6 +622,124 @@ def get_saga(saga_id):
 
 
 # ============================================
+# Event Create (bridge OutSystems + Seat Service)
+# ============================================
+
+@app.route('/events/create', methods=['POST'])
+def create_event():
+    """Create an event in OutSystems and set up sections/seats in Seat Service."""
+    data = request.get_json()
+    if not data:
+        return error("Invalid JSON", 400)
+
+    name = data.get('name')
+    event_date = data.get('event_date')
+    sections_data = data.get('sections', [])
+
+    if not name or not event_date:
+        return error("name and event_date are required", 400)
+
+    if not sections_data:
+        return error("At least one section is required", 400)
+
+    total_seats = sum(s.get('total_seats', 0) for s in sections_data)
+
+    # ---- Step 1: Create event in OutSystems ----
+    try:
+        event_payload = {
+            'name': name,
+            'description': data.get('description', ''),
+            'category': data.get('category', 'Concert'),
+            'event_date': event_date,
+            'venue': data.get('venue', ''),
+            'status': 'upcoming',
+            'total_seats': total_seats,
+            'available_seats': total_seats,
+            'price_min': data.get('price_min', 0),
+            'price_max': data.get('price_max', 0),
+            'image_url': data.get('image_url', ''),
+        }
+        event_resp = requests.post(
+            f"{EVENT_SERVICE_URL}/events",
+            json=event_payload,
+            timeout=10
+        )
+        if event_resp.status_code not in (200, 201):
+            return error(f"Failed to create event in OutSystems: {event_resp.text}", 500)
+
+        print(f"[Orchestrator] Created event in OutSystems: {name}", flush=True)
+
+    except requests.exceptions.RequestException as e:
+        return error(f"Event service unreachable: {str(e)}", 503)
+
+    # ---- Step 1b: Fetch event list to find the newly created event ID ----
+    # OutSystems POST /events doesn't return the ID, so we fetch all events
+    # and find the one we just created by matching the name
+    event_id = None
+    try:
+        list_resp = requests.get(f"{EVENT_SERVICE_URL}/events", timeout=10)
+        if list_resp.status_code == 200:
+            list_result = list_resp.json()
+            events_list = list_result.get('data', list_result)
+            if isinstance(events_list, list):
+                # Find the event with matching name, take the one with highest ID
+                matches = [e for e in events_list
+                           if (e.get('Name') or e.get('name', '')) == name]
+                if matches:
+                    event_id = max(
+                        e.get('Id') or e.get('event_id') or e.get('id') or 0
+                        for e in matches
+                    )
+
+        if not event_id:
+            return error("Event created in OutSystems but could not retrieve the event ID", 500)
+
+        print(f"[Orchestrator] Resolved event ID: {event_id}", flush=True)
+
+    except requests.exceptions.RequestException as e:
+        return error(f"Event created but failed to fetch ID: {str(e)}", 503)
+
+    # ---- Step 2: Create sections and seats in Seat Service ----
+    try:
+        seat_resp = requests.post(
+            f"{SEAT_SERVICE_URL}/seats/setup",
+            json={
+                'event_id': event_id,
+                'sections': sections_data,
+            },
+            timeout=30
+        )
+        if seat_resp.status_code not in (200, 201):
+            print(f"[Orchestrator] Warning: Failed to create seats for event {event_id}: {seat_resp.text}",
+                  flush=True)
+            # Return event_id anyway — seats can be retried
+            return success({
+                'event_id': event_id,
+                'seats_created': False,
+                'warning': f"Event created but seat setup failed: {seat_resp.text}"
+            }, 201)
+
+        seat_data = seat_resp.json().get('data', {})
+        print(f"[Orchestrator] Created {seat_data.get('total_seats', 0)} seats for event {event_id}",
+              flush=True)
+
+    except requests.exceptions.RequestException as e:
+        print(f"[Orchestrator] Warning: Seat service unreachable for event {event_id}: {e}", flush=True)
+        return success({
+            'event_id': event_id,
+            'seats_created': False,
+            'warning': f"Event created but seat service unreachable: {str(e)}"
+        }, 201)
+
+    return success({
+        'event_id': event_id,
+        'seats_created': True,
+        'sections': seat_data.get('sections', []),
+        'total_seats': seat_data.get('total_seats', 0),
+    }, 201)
+
+
+# ============================================
 # Event Cancel (bridge OutSystems -> RabbitMQ)
 # ============================================
 

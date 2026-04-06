@@ -1,0 +1,1208 @@
+asyncapi: 2.6.0
+info:
+  title: ESD Ticket Booking Platform — AMQP Messaging
+  version: 1.0.0
+  description: >
+    Asynchronous messaging specification for the ESD Ticket Booking
+    microservices platform.  All inter-service communication between
+    atomic services flows through RabbitMQ (AMQP 0-9-1).  Only composite
+    services (e.g. Booking Orchestrator) call atomic services via HTTP;
+    atomic services never call each other directly.
+  license:
+    name: MIT
+
+servers:
+  rabbitmq:
+    url: amqp://guest:guest@rabbitmq:5672
+    protocol: amqp
+    description: RabbitMQ broker used by all microservices
+
+defaultContentType: application/json
+
+# ──────────────────────────────────────────────
+# Channels
+# ──────────────────────────────────────────────
+channels:
+
+  # ── event_lifecycle exchange ────────────────
+  event.cancelled.{event_id}:
+    description: >
+      Broadcast when an event is cancelled.  Every service that holds
+      state related to an event binds to event.cancelled.* on the
+      event_lifecycle exchange.
+    parameters:
+      event_id:
+        description: Unique identifier of the cancelled event
+        schema:
+          type: integer
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: event_lifecycle
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+    publish:
+      operationId: publishEventCancelled
+      summary: Publish an event-cancelled notification
+      description: >
+        Published by the Booking Orchestrator (or the legacy Event Service
+        bridge) when an event is cancelled.
+      bindings:
+        amqp:
+          deliveryMode: 2
+      message:
+        $ref: "#/components/messages/EventCancelled"
+    subscribe:
+      operationId: consumeEventCancelled
+      summary: Consume event-cancelled notifications
+      description: >
+        Consumed by Booking (booking_cancel_queue), Seat
+        (seat_cancel_queue), Ticket (ticket_cancel_queue), Waitlist
+        (waitlist_cancel_queue), and Notification
+        (notification_lifecycle_queue).  Each service binds its own
+        queue with routing key event.cancelled.*.
+      bindings:
+        amqp:
+          ack: true
+      message:
+        $ref: "#/components/messages/EventCancelled"
+
+  # ── seat_topic exchange ─────────────────────
+  seat.availability.updated:
+    description: >
+      Emitted by the Seat Service whenever the number of available seats
+      for an event changes.
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: seat_topic
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+    publish:
+      operationId: publishSeatAvailabilityUpdated
+      summary: Publish seat-availability update
+      description: Published by Seat Service after any seat state change.
+      bindings:
+        amqp:
+          deliveryMode: 2
+      message:
+        $ref: "#/components/messages/SeatAvailabilityUpdated"
+    subscribe:
+      operationId: consumeSeatAvailabilityUpdated
+      summary: Consume seat-availability updates
+      description: >
+        Consumed by Booking Orchestrator (event_availability_queue) which
+        bridges the update to OutSystems via HTTP PUT.
+      bindings:
+        amqp:
+          ack: true
+      message:
+        $ref: "#/components/messages/SeatAvailabilityUpdated"
+
+  seat.released.{event_id}:
+    description: >
+      Emitted when a seat is released back into the available pool.
+      The Waitlist Service binds to seat.released.* so it can offer
+      released seats to the next person on the waitlist.
+    parameters:
+      event_id:
+        description: Event whose seat was released
+        schema:
+          type: integer
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: seat_topic
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+    publish:
+      operationId: publishSeatReleased
+      summary: Publish seat-released event
+      description: >
+        Published by Seat Service (on release, cleanup, cancel) or by
+        Waitlist Service (retry cascade).
+      bindings:
+        amqp:
+          deliveryMode: 2
+      message:
+        $ref: "#/components/messages/SeatReleased"
+    subscribe:
+      operationId: consumeSeatReleased
+      summary: Consume seat-released events
+      description: >
+        Consumed by Waitlist Service (waitlist_queue, binding
+        seat.released.*).
+      bindings:
+        amqp:
+          ack: true
+      message:
+        $ref: "#/components/messages/SeatReleased"
+
+  seat.reserve.request:
+    description: >
+      Command message asking the Seat Service to reserve a specific seat
+      for a waitlisted user.
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: seat_topic
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+    publish:
+      operationId: publishSeatReserveRequest
+      summary: Request a seat reservation
+      description: Published by Waitlist Service when promoting a waitlist entry.
+      bindings:
+        amqp:
+          deliveryMode: 2
+      message:
+        $ref: "#/components/messages/SeatReserveRequest"
+    subscribe:
+      operationId: consumeSeatReserveRequest
+      summary: Process seat reservation requests
+      description: Consumed by Seat Service (seat_reserve_queue).
+      bindings:
+        amqp:
+          ack: true
+      message:
+        $ref: "#/components/messages/SeatReserveRequest"
+
+  seat.reserve.confirmed:
+    description: >
+      Reply indicating that a seat reservation succeeded.
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: seat_topic
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+    publish:
+      operationId: publishSeatReserveConfirmed
+      summary: Confirm a seat reservation
+      description: Published by Seat Service on successful reservation.
+      bindings:
+        amqp:
+          deliveryMode: 2
+      message:
+        $ref: "#/components/messages/SeatReserveConfirmed"
+    subscribe:
+      operationId: consumeSeatReserveConfirmed
+      summary: Receive seat reservation confirmations
+      description: Consumed by Waitlist Service (waitlist_confirm_queue).
+      bindings:
+        amqp:
+          ack: true
+      message:
+        $ref: "#/components/messages/SeatReserveConfirmed"
+
+  seat.reserve.failed:
+    description: >
+      Reply indicating that a seat reservation failed.
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: seat_topic
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+    publish:
+      operationId: publishSeatReserveFailed
+      summary: Report a failed seat reservation
+      description: Published by Seat Service when reservation cannot be fulfilled.
+      bindings:
+        amqp:
+          deliveryMode: 2
+      message:
+        $ref: "#/components/messages/SeatReserveFailed"
+    subscribe:
+      operationId: consumeSeatReserveFailed
+      summary: Receive seat reservation failures
+      description: Consumed by Waitlist Service (waitlist_confirm_queue).
+      bindings:
+        amqp:
+          ack: true
+      message:
+        $ref: "#/components/messages/SeatReserveFailed"
+
+  seat.release.request:
+    description: >
+      Command message asking the Seat Service to release a previously
+      reserved seat (e.g. when a waitlist promotion expires).
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: seat_topic
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+    publish:
+      operationId: publishSeatReleaseRequest
+      summary: Request a seat release
+      description: >
+        Published by Waitlist Service (APScheduler expiry job) when a
+        promoted user does not complete payment in time.
+      bindings:
+        amqp:
+          deliveryMode: 2
+      message:
+        $ref: "#/components/messages/SeatReleaseRequest"
+    subscribe:
+      operationId: consumeSeatReleaseRequest
+      summary: Process seat release requests
+      description: Consumed by Seat Service (seat_release_queue).
+      bindings:
+        amqp:
+          ack: true
+      message:
+        $ref: "#/components/messages/SeatReleaseRequest"
+
+  # ── booking_topic exchange ──────────────────
+  booking.confirmed:
+    description: >
+      Emitted when a booking is fully confirmed (payment captured, seat
+      locked).
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: booking_topic
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+    publish:
+      operationId: publishBookingConfirmed
+      summary: Publish booking confirmation
+      description: Published by Booking Orchestrator after successful saga completion.
+      bindings:
+        amqp:
+          deliveryMode: 2
+      message:
+        $ref: "#/components/messages/BookingConfirmed"
+    subscribe:
+      operationId: consumeBookingConfirmed
+      summary: Consume booking confirmations
+      description: >
+        Consumed by Ticket Service (ticket_queue) and Notification
+        Service (notification_booking_queue).
+      bindings:
+        amqp:
+          ack: true
+      message:
+        $ref: "#/components/messages/BookingConfirmed"
+
+  booking.timeout:
+    description: >
+      Emitted when a booking saga times out before the user completes
+      payment.
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: booking_topic
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+    publish:
+      operationId: publishBookingTimeout
+      summary: Publish booking timeout
+      description: >
+        Published by Booking Orchestrator (APScheduler) when the payment
+        window expires.
+      bindings:
+        amqp:
+          deliveryMode: 2
+      message:
+        $ref: "#/components/messages/BookingTimeout"
+    subscribe:
+      operationId: consumeBookingTimeout
+      summary: Consume booking timeout events
+      description: Consumed by Notification Service (notification_booking_queue).
+      bindings:
+        amqp:
+          ack: true
+      message:
+        $ref: "#/components/messages/BookingTimeout"
+
+  booking.refund.requested:
+    description: >
+      Emitted when a refund is requested for a booking, either because
+      the event was cancelled or voluntarily by the user.
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: booking_topic
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+    publish:
+      operationId: publishBookingRefundRequested
+      summary: Publish refund request
+      description: >
+        Published by Booking Service (on event cancellation) or Booking
+        Orchestrator (on voluntary refund).
+      bindings:
+        amqp:
+          deliveryMode: 2
+      message:
+        $ref: "#/components/messages/BookingRefundRequested"
+    subscribe:
+      operationId: consumeBookingRefundRequested
+      summary: Consume refund requests
+      description: >
+        Consumed by Charging Service (charging_refund_queue) and
+        Notification Service (notification_booking_queue).
+      bindings:
+        amqp:
+          ack: true
+      message:
+        $ref: "#/components/messages/BookingRefundRequested"
+
+  # ── refund_direct exchange ──────────────────
+  refund.process:
+    description: >
+      Command message sent to the Payment Service to execute a Stripe
+      refund after the Charging Service has calculated fees.
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: refund_direct
+          type: direct
+          durable: true
+          autoDelete: false
+          vhost: /
+    publish:
+      operationId: publishRefundProcess
+      summary: Dispatch refund for payment processing
+      description: Published by Charging Service after fee calculation.
+      bindings:
+        amqp:
+          deliveryMode: 2
+      message:
+        $ref: "#/components/messages/RefundProcess"
+    subscribe:
+      operationId: consumeRefundProcess
+      summary: Process Stripe refunds
+      description: Consumed by Payment Service (payment_refund_queue).
+      bindings:
+        amqp:
+          ack: true
+      message:
+        $ref: "#/components/messages/RefundProcess"
+
+  # ── refund_topic exchange ───────────────────
+  refund.completed:
+    description: >
+      Emitted after the Payment Service successfully processes a Stripe
+      refund.
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: refund_topic
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+    publish:
+      operationId: publishRefundCompleted
+      summary: Publish refund completion
+      description: Published by Payment Service on successful Stripe refund.
+      bindings:
+        amqp:
+          deliveryMode: 2
+      message:
+        $ref: "#/components/messages/RefundCompleted"
+    subscribe:
+      operationId: consumeRefundCompleted
+      summary: Consume refund completions
+      description: >
+        Consumed by Booking Service (booking_refund_complete_queue) and
+        Notification Service (notification_refund_queue).
+      bindings:
+        amqp:
+          ack: true
+      message:
+        $ref: "#/components/messages/RefundCompleted"
+
+  # ── refund_dlq exchange ─────────────────────
+  refund.failed:
+    description: >
+      Dead-letter message published when the Payment Service exhausts all
+      retry attempts (3) for a Stripe refund.  No consumer is bound;
+      messages accumulate for manual intervention.
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: refund_dlq
+          type: direct
+          durable: true
+          autoDelete: false
+          vhost: /
+    publish:
+      operationId: publishRefundFailed
+      summary: Publish failed refund to dead-letter queue
+      description: >
+        Published by Payment Service after 3 failed Stripe refund
+        attempts.  No automated consumer — requires manual review.
+      bindings:
+        amqp:
+          deliveryMode: 2
+      message:
+        $ref: "#/components/messages/RefundFailed"
+
+  # ── waitlist_topic exchange ─────────────────
+  waitlist.promoted:
+    description: >
+      Emitted when a waitlisted user is promoted and offered a seat.
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: waitlist_topic
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+    publish:
+      operationId: publishWaitlistPromoted
+      summary: Publish waitlist promotion
+      description: Published by Waitlist Service when a seat is offered.
+      bindings:
+        amqp:
+          deliveryMode: 2
+      message:
+        $ref: "#/components/messages/WaitlistPromoted"
+    subscribe:
+      operationId: consumeWaitlistPromoted
+      summary: Consume waitlist promotions
+      description: Consumed by Notification Service (notification_waitlist_queue).
+      bindings:
+        amqp:
+          ack: true
+      message:
+        $ref: "#/components/messages/WaitlistPromoted"
+
+  waitlist.expired:
+    description: >
+      Emitted when a promoted waitlist entry expires because the user did
+      not complete payment within the promotion window.
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: waitlist_topic
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+    publish:
+      operationId: publishWaitlistExpired
+      summary: Publish waitlist expiration
+      description: >
+        Published by Waitlist Service (APScheduler) when the promotion
+        timer fires.
+      bindings:
+        amqp:
+          deliveryMode: 2
+      message:
+        $ref: "#/components/messages/WaitlistExpired"
+    subscribe:
+      operationId: consumeWaitlistExpired
+      summary: Consume waitlist expirations
+      description: Consumed by Notification Service (notification_waitlist_queue).
+      bindings:
+        amqp:
+          ack: true
+      message:
+        $ref: "#/components/messages/WaitlistExpired"
+
+# ──────────────────────────────────────────────
+# Components
+# ──────────────────────────────────────────────
+components:
+
+  messages:
+
+    EventCancelled:
+      name: EventCancelled
+      title: Event Cancelled
+      summary: Broadcast when an event is cancelled
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/EventCancelledPayload"
+
+    SeatAvailabilityUpdated:
+      name: SeatAvailabilityUpdated
+      title: Seat Availability Updated
+      summary: Available-seat count changed for an event
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/SeatAvailabilityUpdatedPayload"
+
+    SeatReleased:
+      name: SeatReleased
+      title: Seat Released
+      summary: A seat has been released back to the available pool
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/SeatReleasedPayload"
+
+    SeatReserveRequest:
+      name: SeatReserveRequest
+      title: Seat Reserve Request
+      summary: Command to reserve a seat for a waitlisted user
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/SeatReserveRequestPayload"
+
+    SeatReserveConfirmed:
+      name: SeatReserveConfirmed
+      title: Seat Reserve Confirmed
+      summary: Seat reservation succeeded
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/SeatReserveConfirmedPayload"
+
+    SeatReserveFailed:
+      name: SeatReserveFailed
+      title: Seat Reserve Failed
+      summary: Seat reservation could not be fulfilled
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/SeatReserveFailedPayload"
+
+    SeatReleaseRequest:
+      name: SeatReleaseRequest
+      title: Seat Release Request
+      summary: Command to release a previously reserved seat
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/SeatReleaseRequestPayload"
+
+    BookingConfirmed:
+      name: BookingConfirmed
+      title: Booking Confirmed
+      summary: A booking has been fully confirmed
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/BookingConfirmedPayload"
+
+    BookingTimeout:
+      name: BookingTimeout
+      title: Booking Timeout
+      summary: A booking saga timed out before payment completion
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/BookingTimeoutPayload"
+
+    BookingRefundRequested:
+      name: BookingRefundRequested
+      title: Booking Refund Requested
+      summary: A refund has been requested for a booking
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/BookingRefundRequestedPayload"
+
+    RefundProcess:
+      name: RefundProcess
+      title: Refund Process
+      summary: Command to execute a Stripe refund
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/RefundProcessPayload"
+
+    RefundCompleted:
+      name: RefundCompleted
+      title: Refund Completed
+      summary: A Stripe refund was successfully processed
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/RefundCompletedPayload"
+
+    RefundFailed:
+      name: RefundFailed
+      title: Refund Failed
+      summary: A Stripe refund failed after 3 retries (dead letter)
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/RefundFailedPayload"
+
+    WaitlistPromoted:
+      name: WaitlistPromoted
+      title: Waitlist Promoted
+      summary: A waitlisted user has been offered a seat
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/WaitlistPromotedPayload"
+
+    WaitlistExpired:
+      name: WaitlistExpired
+      title: Waitlist Expired
+      summary: A promoted waitlist entry expired without payment
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/WaitlistExpiredPayload"
+
+  schemas:
+
+    EventCancelledPayload:
+      type: object
+      required:
+        - event_id
+        - event_name
+      properties:
+        event_id:
+          type: integer
+          description: Unique identifier of the cancelled event
+          example: 42
+        event_name:
+          type: string
+          description: Human-readable name of the event
+          example: "Taylor Swift — The Eras Tour"
+
+    SeatAvailabilityUpdatedPayload:
+      type: object
+      required:
+        - event_id
+        - available_seats
+      properties:
+        event_id:
+          type: integer
+          description: Event whose availability changed
+          example: 42
+        available_seats:
+          type: integer
+          description: Current number of available seats
+          example: 150
+
+    SeatReleasedPayload:
+      type: object
+      required:
+        - event_id
+        - seat_id
+        - section_id
+        - seat_number
+        - source
+      properties:
+        event_id:
+          type: integer
+          description: Event the seat belongs to
+          example: 42
+        seat_id:
+          type: integer
+          description: Unique seat identifier
+          example: 1001
+        section:
+          type:
+            - string
+            - "null"
+          description: Section name (null when not applicable)
+          example: "VIP"
+        section_id:
+          type: integer
+          description: Numeric section identifier
+          example: 3
+        seat_number:
+          type: string
+          description: Human-readable seat label
+          example: "A12"
+        source:
+          type: string
+          description: Why the seat was released
+          enum:
+            - seat_release
+            - waitlist_expiry_release
+            - orphan_cleanup
+            - waitlist_retry
+          example: "seat_release"
+
+    SeatReserveRequestPayload:
+      type: object
+      required:
+        - event_id
+        - seat_id
+        - user_id
+        - waitlist_entry_id
+      properties:
+        event_id:
+          type: integer
+          description: Target event
+          example: 42
+        seat_id:
+          type: integer
+          description: Seat to reserve
+          example: 1001
+        user_id:
+          type: string
+          description: User requesting the seat
+          example: "usr_abc123"
+        waitlist_entry_id:
+          type: integer
+          description: Associated waitlist entry
+          example: 77
+
+    SeatReserveConfirmedPayload:
+      type: object
+      required:
+        - event_id
+        - seat_id
+        - user_id
+      properties:
+        waitlist_entry_id:
+          type:
+            - integer
+            - "null"
+          description: Waitlist entry (null for non-waitlist reservations)
+          example: 77
+        event_id:
+          type: integer
+          description: Event of the reserved seat
+          example: 42
+        seat_id:
+          type: integer
+          description: Reserved seat identifier
+          example: 1001
+        user_id:
+          type: string
+          description: User who received the reservation
+          example: "usr_abc123"
+        section_price:
+          type:
+            - number
+            - "null"
+          format: float
+          description: Price for the section (null when unknown)
+          example: 250.00
+
+    SeatReserveFailedPayload:
+      type: object
+      required:
+        - event_id
+        - seat_id
+        - reason
+      properties:
+        waitlist_entry_id:
+          type:
+            - integer
+            - "null"
+          description: Waitlist entry (null for non-waitlist reservations)
+          example: 77
+        event_id:
+          type: integer
+          description: Event of the requested seat
+          example: 42
+        seat_id:
+          type: integer
+          description: Seat that could not be reserved
+          example: 1001
+        reason:
+          type: string
+          description: >
+            Failure reason — one of the well-known values or an
+            exception message.
+          enum:
+            - lock_unavailable
+            - seat_unavailable
+          example: "seat_unavailable"
+
+    SeatReleaseRequestPayload:
+      type: object
+      required:
+        - event_id
+        - seat_id
+        - user_id
+      properties:
+        event_id:
+          type: integer
+          description: Event of the seat to release
+          example: 42
+        seat_id:
+          type: integer
+          description: Seat to release
+          example: 1001
+        user_id:
+          type: string
+          description: User whose reservation should be released
+          example: "usr_abc123"
+
+    BookingConfirmedPayload:
+      type: object
+      required:
+        - booking_id
+        - saga_id
+        - user_id
+        - event_id
+        - seat_id
+        - email
+        - phone
+        - amount
+        - payment_intent_id
+      properties:
+        booking_id:
+          type: integer
+          description: Unique booking identifier
+          example: 5001
+        saga_id:
+          type: string
+          description: Correlation ID for the booking saga
+          example: "saga_9f8e7d6c"
+        user_id:
+          type: string
+          description: User who made the booking
+          example: "usr_abc123"
+        event_id:
+          type: integer
+          description: Booked event
+          example: 42
+        seat_id:
+          type: integer
+          description: Reserved seat
+          example: 1001
+        email:
+          type: string
+          format: email
+          description: User email for confirmation
+          example: "user@example.com"
+        phone:
+          type: string
+          description: User phone number
+          example: "+6591234567"
+        amount:
+          type: number
+          format: float
+          description: Total amount charged
+          example: 250.00
+        payment_intent_id:
+          type: string
+          description: Stripe PaymentIntent ID
+          example: "pi_3abc123def456"
+
+    BookingTimeoutPayload:
+      type: object
+      required:
+        - booking_id
+        - saga_id
+        - user_id
+        - event_id
+        - seat_id
+        - reason
+      properties:
+        booking_id:
+          type: integer
+          description: Timed-out booking
+          example: 5001
+        saga_id:
+          type: string
+          description: Correlation ID for the booking saga
+          example: "saga_9f8e7d6c"
+        user_id:
+          type: string
+          description: User who did not complete payment
+          example: "usr_abc123"
+        event_id:
+          type: integer
+          description: Event of the timed-out booking
+          example: 42
+        seat_id:
+          type: integer
+          description: Seat that was held
+          example: 1001
+        reason:
+          type: string
+          description: Human-readable timeout reason
+          example: "Payment window expired after 10 minutes"
+
+    BookingRefundRequestedPayload:
+      type: object
+      required:
+        - booking_id
+        - user_id
+        - email
+        - amount
+        - event_id
+        - refund_type
+      properties:
+        booking_id:
+          type: integer
+          description: Booking to refund
+          example: 5001
+        user_id:
+          type: string
+          description: User requesting or receiving the refund
+          example: "usr_abc123"
+        email:
+          type: string
+          format: email
+          description: User email for refund notification
+          example: "user@example.com"
+        amount:
+          type: number
+          format: float
+          description: Original booking amount
+          example: 250.00
+        event_id:
+          type: integer
+          description: Event associated with the booking
+          example: 42
+        refund_type:
+          type: string
+          description: Reason category for the refund
+          enum:
+            - event_cancelled
+            - voluntary
+          example: "voluntary"
+
+    RefundProcessPayload:
+      type: object
+      required:
+        - booking_id
+        - user_id
+        - email
+        - refund_amount
+        - original_amount
+        - service_fee
+        - event_id
+        - refund_type
+      properties:
+        booking_id:
+          type: integer
+          description: Booking being refunded
+          example: 5001
+        user_id:
+          type: string
+          description: User receiving the refund
+          example: "usr_abc123"
+        email:
+          type: string
+          format: email
+          description: User email
+          example: "user@example.com"
+        refund_amount:
+          type: number
+          format: float
+          description: Amount to refund after fees
+          example: 237.50
+        original_amount:
+          type: number
+          format: float
+          description: Original booking amount
+          example: 250.00
+        service_fee:
+          type: number
+          format: float
+          description: Non-refundable service fee
+          example: 12.50
+        event_id:
+          type: integer
+          description: Event associated with the booking
+          example: 42
+        refund_type:
+          type: string
+          description: Reason category for the refund
+          enum:
+            - event_cancelled
+            - voluntary
+          example: "voluntary"
+
+    RefundCompletedPayload:
+      type: object
+      required:
+        - booking_id
+        - user_id
+        - email
+        - refund_amount
+        - original_amount
+        - service_fee
+        - event_id
+        - refund_type
+      properties:
+        booking_id:
+          type: integer
+          description: Refunded booking
+          example: 5001
+        user_id:
+          type: string
+          description: User who received the refund
+          example: "usr_abc123"
+        email:
+          type: string
+          format: email
+          description: User email
+          example: "user@example.com"
+        refund_amount:
+          type: number
+          format: float
+          description: Amount refunded
+          example: 237.50
+        original_amount:
+          type: number
+          format: float
+          description: Original booking amount
+          example: 250.00
+        service_fee:
+          type: number
+          format: float
+          description: Non-refundable service fee
+          example: 12.50
+        event_id:
+          type: integer
+          description: Event associated with the booking
+          example: 42
+        refund_type:
+          type: string
+          description: Reason category for the refund
+          enum:
+            - event_cancelled
+            - voluntary
+          example: "voluntary"
+
+    RefundFailedPayload:
+      type: object
+      required:
+        - booking_id
+        - error
+        - refund_amount
+        - event_id
+      properties:
+        booking_id:
+          type: integer
+          description: Booking whose refund failed
+          example: 5001
+        error:
+          type: string
+          description: Error message from the last Stripe attempt
+          example: "Stripe error: card_declined"
+        refund_amount:
+          type: number
+          format: float
+          description: Amount that could not be refunded
+          example: 237.50
+        event_id:
+          type: integer
+          description: Event associated with the booking
+          example: 42
+
+    WaitlistPromotedPayload:
+      type: object
+      required:
+        - entry_id
+        - event_id
+        - user_id
+        - email
+        - seat_id
+        - promotion_expires_at
+      properties:
+        entry_id:
+          type: integer
+          description: Waitlist entry that was promoted
+          example: 77
+        event_id:
+          type: integer
+          description: Event the user is waitlisted for
+          example: 42
+        user_id:
+          type: string
+          description: Promoted user
+          example: "usr_abc123"
+        email:
+          type: string
+          format: email
+          description: User email for promotion notification
+          example: "user@example.com"
+        phone:
+          type:
+            - string
+            - "null"
+          description: User phone number (null when not provided)
+          example: "+6591234567"
+        seat_id:
+          type: integer
+          description: Seat offered to the user
+          example: 1001
+        section:
+          type:
+            - string
+            - "null"
+          description: Section name (null when not applicable)
+          example: "VIP"
+        promotion_expires_at:
+          type: string
+          format: date-time
+          description: ISO 8601 deadline to complete payment
+          example: "2026-04-06T15:30:00Z"
+
+    WaitlistExpiredPayload:
+      type: object
+      required:
+        - entry_id
+        - event_id
+        - user_id
+        - email
+      properties:
+        entry_id:
+          type: integer
+          description: Waitlist entry that expired
+          example: 77
+        event_id:
+          type: integer
+          description: Event the user was waitlisted for
+          example: 42
+        user_id:
+          type: string
+          description: User whose promotion expired
+          example: "usr_abc123"
+        email:
+          type: string
+          format: email
+          description: User email for expiration notification
+          example: "user@example.com"
+
+  # ── Queue Bindings Reference ────────────────
+  # AsyncAPI 2.6.0 does not have first-class queue objects, so the
+  # mapping is documented here for implementers.
+  #
+  # Queue                          Exchange           Binding Key(s)                                       Durable  Prefetch  Ack
+  # ─────────────────────────────  ─────────────────  ───────────────────────────────────────────────────── ───────  ────────  ────
+  # event_availability_queue       seat_topic         seat.availability.updated                             yes      10       manual
+  # booking_cancel_queue           event_lifecycle    event.cancelled.*                                     yes      10       manual
+  # booking_refund_complete_queue  refund_topic       refund.completed                                      yes      10       manual
+  # seat_reserve_queue             seat_topic         seat.reserve.request                                  yes      10       manual
+  # seat_release_queue             seat_topic         seat.release.request                                  yes      10       manual
+  # seat_cancel_queue              event_lifecycle    event.cancelled.*                                     yes      10       manual
+  # payment_refund_queue           refund_direct      refund.process                                        yes      10       manual
+  # notification_booking_queue     booking_topic      booking.confirmed, booking.timeout,                   yes      10       manual
+  #                                                   booking.refund.requested
+  # notification_waitlist_queue    waitlist_topic     waitlist.promoted, waitlist.expired                    yes      10       manual
+  # notification_lifecycle_queue   event_lifecycle    event.cancelled.*                                     yes      10       manual
+  # notification_refund_queue      refund_topic       refund.completed                                      yes      10       manual
+  # ticket_queue                   booking_topic      booking.confirmed                                     yes      10       manual
+  # ticket_cancel_queue            event_lifecycle    event.cancelled.*                                     yes      10       manual
+  # waitlist_queue                 seat_topic         seat.released.*                                       yes      10       manual
+  # waitlist_confirm_queue         seat_topic         seat.reserve.confirmed, seat.reserve.failed           yes      10       manual
+  # waitlist_cancel_queue          event_lifecycle    event.cancelled.*                                     yes      10       manual
+  # charging_refund_queue          booking_topic      booking.refund.requested                               yes      10       manual

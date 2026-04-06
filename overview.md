@@ -56,7 +56,6 @@ The platform supports three primary user scenarios, each demonstrating a differe
 
 | Service | Type | Port | Database | Description |
 |---------|------|------|----------|-------------|
-| Event Service | Atomic | 5001 | event_db | CRUD for events; publishes `event.cancelled` to `event_lifecycle` exchange |
 | Booking Service | Atomic | 5002 | booking_db | Booking record management; listens for event cancellation and refund completion |
 | Seat Service | Atomic | 5003 | seat_db | Seat inventory with Redis distributed lock + MySQL FOR UPDATE; auto-assignment by proximity |
 | Payment Service | Atomic | 5004 | payment_db | Stripe PaymentIntent creation/verification; refund processing with 3 retries and DLQ |
@@ -66,31 +65,29 @@ The platform supports three primary user scenarios, each demonstrating a differe
 | Charging Service | Atomic | 5008 | charging_db | Service fee calculation (10% retention on refunds); publishes `refund.process` to Payment |
 | Booking Orchestrator | Composite | 5010 | saga_log_db | Saga orchestration for booking flow; calls atomic services via HTTP; APScheduler for payment timeout |
 
-### 2.1 Event Service
+### 2.1 Event Service (OutSystems)
 
-**Port:** 5001 | **Database:** event_db | **Type:** Atomic
+**Host:** OutSystems Cloud (`personal-fptjqc79.outsystemscloud.com`) | **Database:** OutSystems managed | **Type:** Atomic (External)
 
-Manages event lifecycle including creation, updates, and cancellation. When an event is cancelled, it publishes to the `event_lifecycle` exchange, triggering the fan-out cancellation flow across all downstream services.
+Migrated from Python/Flask to an OutSystems low-code REST API. Manages event lifecycle including creation, updates, and cancellation. Returns PascalCase field names (e.g., `EventDate`, `Status`) which the frontend normalizes to snake_case via `normalizeEvent()` in `client.js`. The Booking Orchestrator also handles PascalCase with dual-key lookups.
 
-**REST API Endpoints:**
+Since OutSystems cannot publish to RabbitMQ or consume AMQP messages, two capabilities are bridged by the Booking Orchestrator:
+- **Event cancellation** — The orchestrator calls OutSystems to update the status, then publishes `event.cancelled` to RabbitMQ on its behalf
+- **Seat availability sync** — The orchestrator consumes `seat.availability.updated` from RabbitMQ, then calls OutSystems PUT to update `AvailableSeats`
+
+**REST API Endpoints (OutSystems):**
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/health` | Health check with database ping |
-| GET | `/events` | List events with optional filters: `status`, `category`, `date_from`, `date_to` |
-| GET | `/events/<event_id>` | Get a single event by ID |
-| POST | `/events` | Create a new event (required: `name`, `event_date`, `total_seats`) |
-| PUT | `/events/<event_id>` | Update event fields (`name`, `description`, `category`, `event_date`, `venue`, `status`, `total_seats`, `available_seats`, `price_min`, `price_max`, `image_url`) |
-| POST | `/events/<event_id>/cancel` | Cancel an event and publish `event.cancelled.{id}` to fan-out consumers |
+| GET | `/events` | List events with optional filters: `Status`, `Category` |
+| GET | `/<event_id>` | Get a single event by ID |
+| POST | `/events` | Create a new event |
+| PUT | `/update/<event_id>` | Update event fields (including `AvailableSeats`) |
+| POST | `/cancel/<event_id>` | Cancel an event (updates status to `cancelled` in OutSystems DB) |
+| DELETE | `/delete/<event_id>` | Permanently delete an event |
+| POST | `/fix-statuses` | Utility: bulk-update events with empty Status to `"upcoming"` |
 
-**AMQP Interactions:**
-
-| Direction | Exchange | Routing Key | Description |
-|-----------|----------|-------------|-------------|
-| Publishes | `event_lifecycle` (topic) | `event.cancelled.{event_id}` | Published when admin cancels an event |
-| Consumes | `seat_topic` (topic) | `seat.availability.updated` | Syncs `available_seats` count from Seat Service |
-
-**Queue:** `event_availability_queue`
+**AMQP Interactions:** None (OutSystems cannot interact with RabbitMQ). See Booking Orchestrator (Section 2.9) for the bridged AMQP interactions.
 
 ---
 
@@ -134,6 +131,7 @@ Manages seat inventory with a dual-lock concurrency pattern: Redis `SET NX EX 60
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | Health check with database ping |
+| POST | `/seats/setup` | Create sections and seats for a new event (required: `event_id`, `sections[]`) |
 | GET | `/seats/event/<event_id>` | Get all seats for an event with section info |
 | GET | `/seats/availability/<event_id>` | Get available seat count per section |
 | POST | `/seats/reserve` | Reserve a seat with dual-lock and auto-assignment (required: `event_id`, `seat_id`, `user_id`) |
@@ -316,6 +314,8 @@ Calculates service fees for refund processing. For voluntary refunds, a 10% serv
 
 The only composite service in the platform. Orchestrates the multi-step booking saga by making synchronous HTTP calls to atomic services in sequence. Maintains a saga log with status transitions (`STARTED` -> `SEAT_RESERVED` -> `PAYMENT_PENDING` -> `PAYMENT_SUCCESS` -> `CONFIRMED`). On failure at any step, compensating transactions undo partial progress (release seat, mark booking as failed). Uses optimistic locking on `PAYMENT_PENDING` status to prevent race conditions between the confirm endpoint and the APScheduler timeout checker. APScheduler runs every 30 seconds to detect expired sagas and trigger compensating transactions.
 
+Also acts as a **bridge between OutSystems and RabbitMQ** for two capabilities that the migrated Event Service can no longer handle natively: event cancellation (publishes `event.cancelled` to RabbitMQ after calling OutSystems) and seat availability sync (consumes `seat.availability.updated` from RabbitMQ and calls OutSystems PUT to update `AvailableSeats`).
+
 **REST API Endpoints:**
 
 | Method | Path | Description |
@@ -325,6 +325,8 @@ The only composite service in the platform. Orchestrates the multi-step booking 
 | POST | `/bookings/confirm` | Finalize saga: verify payment, confirm seat, update booking, publish `booking.confirmed` (required: `saga_id`, `payment_intent_id`) |
 | POST | `/bookings/<booking_id>/refund` | User-initiated voluntary refund with 24h cutoff enforcement |
 | GET | `/sagas/<saga_id>` | Get saga status for frontend polling |
+| POST | `/events/create` | Bridge: create event in OutSystems + set up sections/seats in Seat Service |
+| POST | `/events/<event_id>/cancel` | Bridge: cancel event via OutSystems, then publish `event.cancelled` to RabbitMQ |
 
 **AMQP Interactions:**
 
@@ -333,12 +335,16 @@ The only composite service in the platform. Orchestrates the multi-step booking 
 | Publishes | `booking_topic` (topic) | `booking.confirmed` | Published after successful saga completion |
 | Publishes | `booking_topic` (topic) | `booking.timeout` | Published when APScheduler detects expired saga |
 | Publishes | `booking_topic` (topic) | `booking.refund.requested` | Published for voluntary user-initiated refunds |
+| Publishes | `event_lifecycle` (topic) | `event.cancelled.{event_id}` | Bridge: published after OutSystems cancels an event |
+| Consumes | `seat_topic` (topic) | `seat.availability.updated` | Bridge: syncs available_seats to OutSystems via HTTP PUT |
+
+**Queue:** `event_availability_queue`
 
 **HTTP Dependencies on Atomic Services:**
 
 | Service | Endpoints Called |
 |---------|----------------|
-| Event Service | `GET /events/{id}` |
+| Event Service (OutSystems) | `GET /{id}`, `POST /cancel/{id}`, `PUT /update/{id}` |
 | Seat Service | `POST /seats/reserve`, `POST /seats/release`, `POST /seats/confirm` |
 | Booking Service | `POST /bookings`, `PUT /bookings/{id}`, `GET /bookings/{id}` |
 | Payment Service | `POST /payments/create`, `POST /payments/verify` |
@@ -588,7 +594,7 @@ CREATE TABLE saga_log (
 
 | Routing Key | Publisher | Description |
 |-------------|-----------|-------------|
-| `event.cancelled.{event_id}` | Event Service | Event has been cancelled by admin |
+| `event.cancelled.{event_id}` | Booking Orchestrator | Published after OutSystems cancels the event (bridge) |
 
 **waitlist_topic:**
 
@@ -619,7 +625,7 @@ CREATE TABLE saga_log (
 
 | Queue Name | Service | Exchange | Routing Keys |
 |------------|---------|----------|--------------|
-| `event_availability_queue` | Event | `seat_topic` | `seat.availability.updated` |
+| `event_availability_queue` | Booking Orchestrator | `seat_topic` | `seat.availability.updated` |
 | `booking_cancel_queue` | Booking | `event_lifecycle` | `event.cancelled.*` |
 | `booking_refund_complete_queue` | Booking | `refund_topic` | `refund.completed` |
 | `seat_reserve_queue` | Seat | `seat_topic` | `seat.reserve.request` |
@@ -919,7 +925,10 @@ If no more users remain on the waitlist, the seat stays available for direct boo
 ```mermaid
 sequenceDiagram
     actor Admin
-    participant Event as Event Service
+    participant FE as Frontend
+    participant Kong as Kong Gateway
+    participant Orch as Booking Orchestrator
+    participant Event as Event Service (OutSystems)
     participant RMQ as RabbitMQ (event_lifecycle)
     participant Seat as Seat Service
     participant Booking as Booking Service
@@ -930,9 +939,20 @@ sequenceDiagram
     participant Notif as Notification Service
     participant Stripe as Stripe API
 
-    Admin->>Event: POST /events/{id}/cancel
-    Note over Event: status = cancelled
-    Event->>RMQ: Publish event.cancelled.{id}
+    Admin->>FE: Click "Cancel Event"
+    FE->>Kong: POST /api/orchestrator/events/{id}/cancel
+    Kong->>Orch: Forward request
+
+    Note over Orch: Step 1: Validate event status
+    Orch->>Event: GET /{id}
+    Event-->>Orch: Event data (status: upcoming)
+
+    Note over Orch: Step 2: Cancel in OutSystems
+    Orch->>Event: POST /cancel/{id}
+    Event-->>Orch: Status updated to cancelled
+
+    Note over Orch: Step 3: Bridge to RabbitMQ
+    Orch->>RMQ: Publish event.cancelled.{id}
 
     par Parallel Fan-Out
         RMQ->>Seat: Consume event.cancelled.*
@@ -982,9 +1002,11 @@ sequenceDiagram
 
 **Fan-Out Phase (Parallel)**
 
-1. Admin calls HTTP POST /events/{id}/cancel on Event Service (via Kong API Gateway)
-2. Event Service sets the event status to `cancelled` in MySQL and publishes `event.cancelled.{event_id}` to the `event_lifecycle` topic exchange via RabbitMQ (AMQP)
-3. Five services consume `event.cancelled.*` in parallel:
+1. Admin clicks "Cancel Event" on the EventDetailPage. The frontend calls HTTP POST /api/orchestrator/events/{id}/cancel through Kong API Gateway, which routes to the Booking Orchestrator
+2. Booking Orchestrator validates the event by calling OutSystems GET /{id} to confirm status is `upcoming` or `ongoing`
+3. Booking Orchestrator calls OutSystems POST /cancel/{id} to update the event status to `cancelled`
+4. Booking Orchestrator publishes `event.cancelled.{event_id}` to the `event_lifecycle` topic exchange via RabbitMQ (AMQP) — acting as a bridge since OutSystems cannot publish to RabbitMQ
+5. Five services consume `event.cancelled.*` in parallel:
    - **Seat Service:** Bulk-resets all reserved/booked seats to `available` and clears all Redis distributed locks for that event. Publishes `seat.availability.updated` to `seat_topic`
    - **Booking Service:** Finds all bookings with status `confirmed` for the event, sets each to `pending_refund`, and publishes `booking.refund.requested` to `booking_topic` for each affected booking
    - **Ticket Service:** Bulk-invalidates all tickets with status `valid` for the event
@@ -993,10 +1015,10 @@ sequenceDiagram
 
 **Refund Chain (Sequential)**
 
-4. Charging Service consumes `booking.refund.requested` from `booking_topic`. For event-cancelled refunds, the service fee is 0% (full refund). It calculates the refund amount and publishes `refund.process` to the `refund_direct` exchange via RabbitMQ
-5. Payment Service consumes `refund.process` from `refund_direct` and issues a Stripe refund via the Stripe API with up to 3 retry attempts (1-second delay between retries)
-6. On success, Payment Service publishes `refund.completed` to the `refund_topic` exchange via RabbitMQ. On failure after 3 retries, it publishes `refund.failed` to the `refund_dlq` dead letter exchange for manual intervention
-7. Two services consume `refund.completed` in parallel:
+6. Charging Service consumes `booking.refund.requested` from `booking_topic`. For event-cancelled refunds, the service fee is 0% (full refund). It calculates the refund amount and publishes `refund.process` to the `refund_direct` exchange via RabbitMQ
+7. Payment Service consumes `refund.process` from `refund_direct` and issues a Stripe refund via the Stripe API with up to 3 retry attempts (1-second delay between retries)
+8. On success, Payment Service publishes `refund.completed` to the `refund_topic` exchange via RabbitMQ. On failure after 3 retries, it publishes `refund.failed` to the `refund_dlq` dead letter exchange for manual intervention
+9. Two services consume `refund.completed` in parallel:
    - **Booking Service:** Updates the booking status from `pending_refund` to `refunded`
    - **Notification Service:** Sends a refund confirmation email to the user via the SMU Lab Notification API
 
@@ -1010,7 +1032,8 @@ Kong 3.6 runs in DB-less mode with declarative YAML configuration (`kong/kong.ym
 
 | Gateway Path | Service Name | Upstream URL | Description |
 |--------------|-------------|--------------|-------------|
-| `/api/events` | event-service | `http://event:5001/events` | Event CRUD operations |
+| `/api/events` | event-service | `https://personal-fptjqc79.outsystemscloud.com/ESDTicketBookingServices/rest/EventService/events` | Event list (OutSystems) |
+| `/api/event` | event-detail-service | `https://personal-fptjqc79.outsystemscloud.com/ESDTicketBookingServices/rest/EventService` | Event detail by ID (OutSystems) |
 | `/api/bookings` | booking-service | `http://booking:5002/bookings` | Booking queries and management |
 | `/api/seats` | seat-service | `http://seat:5003/seats` | Seat availability and reservation |
 | `/api/payments` | payment-service | `http://payment:5004/payments` | Payment creation and verification |
@@ -1018,7 +1041,7 @@ Kong 3.6 runs in DB-less mode with declarative YAML configuration (`kong/kong.ym
 | `/api/tickets` | ticket-service | `http://ticket:5006/tickets` | Ticket retrieval |
 | `/api/waitlist` | waitlist-service | `http://waitlist:5007/waitlist` | Waitlist join and position queries |
 | `/api/charging` | charging-service | `http://charging:5008/fees` | Fee queries |
-| `/api/orchestrator` | orchestrator-service | `http://booking_orchestrator:5010` | Booking saga initiation and confirmation |
+| `/api/orchestrator` | orchestrator-service | `http://booking_orchestrator:5010` | Booking saga, event cancel bridge, refunds |
 | `/api/sagas` | orchestrator-sagas-service | `http://booking_orchestrator:5010/sagas` | Saga status polling |
 
 All routes use `strip_path: true`, meaning the gateway prefix (e.g., `/api/events`) is stripped before forwarding to the upstream service.
@@ -1042,37 +1065,53 @@ All routes use `strip_path: true`, meaning the gateway prefix (e.g., `/api/event
 
 ## 7. OutSystems Recommendation
 
-### Recommended Service: Event Service
+### Migrated Service: Event Service
 
-The **Event Service** is the best candidate for an OutSystems low-code implementation based on the following analysis.
+The **Event Service** has been migrated from Python/Flask to an OutSystems low-code REST API hosted on OutSystems Cloud.
 
-### Rationale
+### Why Event Service
 
-1. **Simplest CRUD operations.** The Event Service exposes straightforward REST endpoints (`GET /events`, `GET /events/{id}`, `POST /events`, `PUT /events/{id}`, `POST /events/{id}/cancel`). These map directly to OutSystems Server Actions and Screen Aggregates with no complex business logic in the critical path.
+1. **Simplest CRUD operations.** The Event Service exposes straightforward REST endpoints that map directly to OutSystems Server Actions and Screen Aggregates with no complex business logic in the critical path.
 
-2. **Admin-facing use case.** Event management (creating, editing, cancelling events) is naturally suited to OutSystems form builders and list screens. An admin dashboard for managing events is a textbook OutSystems application.
+2. **Admin-facing use case.** Event management (creating, editing, cancelling events) is naturally suited to OutSystems form builders and list screens.
 
-3. **REST endpoints designed for external consumption.** The endpoints follow RESTful conventions with JSON request/response bodies, standard HTTP status codes, and optional query parameter filters. OutSystems can consume these as REST API integrations without modification.
+3. **No real-time requirements.** The Event Service does not require WebSocket connections, Redis distributed locking, or other infrastructure that OutSystems cannot natively handle.
 
-4. **Clear read/write separation.** The OutSystems dashboard reads event listings (GET) and creates/updates events (POST/PUT). This aligns with OutSystems' data fetching patterns (Aggregates for reads, Server Actions for writes).
+4. **Demonstrates OutSystems triggering complex backend flows.** When an admin cancels an event, the cancel request goes through the Booking Orchestrator which calls OutSystems to update the status and then publishes `event.cancelled` to RabbitMQ, triggering the full fan-out cancellation scenario across all backend services. This demonstrates OutSystems as a low-code platform driving sophisticated event-driven architecture.
 
-5. **No real-time requirements.** The Event Service does not require WebSocket connections, Redis distributed locking, or other infrastructure that OutSystems cannot natively handle. The AMQP interactions (publishing `event.cancelled` and consuming `seat.availability.updated`) happen server-side and are invisible to the OutSystems frontend.
+### Migration Architecture
 
-6. **Demonstrates OutSystems triggering complex backend flows.** When an admin cancels an event via the OutSystems interface, the `POST /events/{id}/cancel` endpoint publishes `event.cancelled` to RabbitMQ, which triggers the full fan-out cancellation scenario across all backend services. This demonstrates OutSystems as a low-code frontend driving sophisticated event-driven architecture.
+Since OutSystems cannot interact with RabbitMQ (no AMQP support), the **Booking Orchestrator** acts as a bridge for two capabilities:
 
-### Integration Endpoints
+| Capability | How It Works |
+|-----------|-------------|
+| **Event Cancellation** | Frontend calls `POST /api/orchestrator/events/{id}/cancel` -> Orchestrator calls OutSystems `POST /cancel/{id}` -> Orchestrator publishes `event.cancelled.{event_id}` to RabbitMQ |
+| **Seat Availability Sync** | Seat Service publishes `seat.availability.updated` to RabbitMQ -> Orchestrator consumes message -> Orchestrator calls OutSystems `PUT /update/{id}` with updated `AvailableSeats` |
 
-All endpoints are accessible through Kong API Gateway:
+### Adaptations Made
 
-| Operation | Method | URL |
-|-----------|--------|-----|
-| List events | GET | `http://localhost:8000/api/events` |
-| Get event by ID | GET | `http://localhost:8000/api/events/{id}` |
-| Create event | POST | `http://localhost:8000/api/events` |
-| Update event | PUT | `http://localhost:8000/api/events/{id}` |
-| Cancel event | POST | `http://localhost:8000/api/events/{id}/cancel` |
+| Change | File | Description |
+|--------|------|-------------|
+| Kong routes to OutSystems | `kong/kong.yml` | Event service URLs now point to OutSystems Cloud instead of local Python container |
+| PascalCase normalization | `frontend/src/api/client.js` | `normalizeEvent()` function maps OutSystems PascalCase fields to snake_case |
+| Dual-key lookups | `services/booking_orchestrator/app.py` | Checks both `Status`/`status` and `EventDate`/`event_date` in event responses |
+| Cancel bridge route | `services/booking_orchestrator/app.py` | New `POST /events/{id}/cancel` endpoint bridges OutSystems -> RabbitMQ |
+| Availability consumer | `services/booking_orchestrator/app.py` | New AMQP consumer thread syncs `seat.availability.updated` to OutSystems |
+| Frontend cancel path | `frontend/src/pages/EventDetailPage.jsx` | Cancel calls go to `/api/orchestrator/events/{id}/cancel` instead of `/api/events/{id}/cancel` |
 
-The team will need to build the OutSystems application and configure REST API integrations pointing to these Kong gateway URLs.
+### OutSystems REST API
+
+Hosted at: `https://personal-fptjqc79.outsystemscloud.com/ESDTicketBookingServices/rest/EventService`
+
+| Operation | Method | Path |
+|-----------|--------|------|
+| List events | GET | `/events` |
+| Get event by ID | GET | `/{id}` |
+| Create event | POST | `/events` |
+| Update event | PUT | `/update/{id}` |
+| Cancel event | POST | `/cancel/{id}` |
+
+See `OUTSYSTEMS_MIGRATION_GUIDE.md` for the full migration guide including all issues encountered and fixes applied.
 
 ---
 
@@ -1110,7 +1149,7 @@ All backend services share the following common variables:
 | `SMU_NOTI_API_KEY` | Notification Service | Yes | API key for SMU Lab Notification API |
 | `REDIS_HOST` | Seat Service | No (default: `redis`) | Redis hostname |
 | `REDIS_PORT` | Seat Service | No (default: `6379`) | Redis port |
-| `EVENT_SERVICE_URL` | Booking Orchestrator | No (default: `http://event:5001`) | Event Service internal URL |
+| `EVENT_SERVICE_URL` | Booking Orchestrator | Yes | OutSystems Event Service REST API base URL |
 | `SEAT_SERVICE_URL` | Booking Orchestrator | No (default: `http://seat:5003`) | Seat Service internal URL |
 | `PAYMENT_SERVICE_URL` | Booking Orchestrator | No (default: `http://payment:5004`) | Payment Service internal URL |
 | `BOOKING_SERVICE_URL` | Booking Orchestrator | No (default: `http://booking:5002`) | Booking Service internal URL |

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Search, SlidersHorizontal } from 'lucide-react';
+import { Link, useOutletContext } from 'react-router-dom';
+import { Search, SlidersHorizontal, Plus } from 'lucide-react';
 import { api } from '../api/client.js';
 import EventCard from '../components/EventCard.jsx';
 import LoadingSpinner from '../components/ui/LoadingSpinner.jsx';
@@ -7,6 +8,8 @@ import LoadingSpinner from '../components/ui/LoadingSpinner.jsx';
 const STATUS_OPTIONS = ['All', 'upcoming', 'ongoing'];
 
 export default function EventsPage() {
+  const { userId } = useOutletContext();
+  const isAdmin = userId === 'admin';
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -59,7 +62,17 @@ export default function EventsPage() {
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <h1 className="text-3xl font-bold text-text-primary">Upcoming Events</h1>
+        <div className="flex items-center gap-4">
+          <h1 className="text-3xl font-bold text-text-primary">Upcoming Events</h1>
+          {isAdmin && (
+            <Link
+              to="/events/create"
+              className="flex items-center gap-1.5 px-4 py-2 bg-accent hover:bg-accent-hover text-white rounded-lg text-sm font-medium transition-colors"
+            >
+              <Plus size={16} /> Create Event
+            </Link>
+          )}
+        </div>
 
         <div className="relative">
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-secondary" />

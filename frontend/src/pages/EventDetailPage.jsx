@@ -148,7 +148,7 @@ export default function EventDetailPage() {
             <div>
               <h3 className="text-text-primary font-semibold">Cancel this event?</h3>
               <p className="text-text-secondary text-sm mt-1">
-                This will cancel all bookings and issue refunds (minus 10% service fee) to all ticket holders. This action cannot be undone.
+                This will cancel all bookings and issue full refunds to all ticket holders. This action cannot be undone.
               </p>
             </div>
           </div>
@@ -174,7 +174,7 @@ export default function EventDetailPage() {
       {event.status === 'cancelled' && (
         <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-5 text-center">
           <p className="text-red-400 font-semibold">This event has been cancelled</p>
-          <p className="text-text-secondary text-sm mt-1">All bookings have been refunded (minus 10% service fee).</p>
+          <p className="text-text-secondary text-sm mt-1">All bookings have been fully refunded.</p>
         </div>
       )}
 

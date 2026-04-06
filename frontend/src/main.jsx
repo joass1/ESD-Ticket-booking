@@ -9,6 +9,7 @@ import EventDetailPage from './pages/EventDetailPage.jsx';
 import WaitlistPage from './pages/WaitlistPage.jsx';
 import BookingHistoryPage from './pages/BookingHistoryPage.jsx';
 import BookingPage from './pages/BookingPage.jsx';
+import CreateEventPage from './pages/CreateEventPage.jsx';
 
 const router = createBrowserRouter([
   {
@@ -17,6 +18,7 @@ const router = createBrowserRouter([
     errorElement: <NotFoundPage />,
     children: [
       { index: true, element: <EventsPage /> },
+      { path: 'events/create', element: <CreateEventPage /> },
       { path: 'events/:eventId', element: <EventDetailPage /> },
       { path: 'events/:eventId/book', element: <BookingPage /> },
       { path: 'events/:eventId/waitlist', element: <WaitlistPage /> },

@@ -203,6 +203,78 @@ def health():
         return error(f"Database unreachable: {str(e)}", 503)
 
 
+@app.route('/seats/setup', methods=['POST'])
+def setup_sections():
+    """Create sections and seats for a new event."""
+    data = request.get_json()
+    if not data:
+        return error("Request body is required", 400)
+
+    event_id = data.get('event_id')
+    sections_data = data.get('sections')
+
+    if not event_id or not sections_data:
+        return error("event_id and sections are required", 400)
+
+    # Check if sections already exist for this event
+    existing = db.session.query(Section).filter_by(event_id=event_id).first()
+    if existing:
+        return error(f"Sections already exist for event {event_id}", 409)
+
+    try:
+        created_sections = []
+        total_seats_created = 0
+
+        for s in sections_data:
+            name = s.get('name')
+            price = s.get('price')
+            total_seats = s.get('total_seats')
+
+            if not all([name, price, total_seats]):
+                continue
+
+            section = Section(
+                event_id=event_id,
+                name=name,
+                price=price,
+                total_seats=total_seats,
+                available_seats=total_seats
+            )
+            db.session.add(section)
+            db.session.flush()  # get section_id
+
+            # Create individual seats: NAME-001, NAME-002, etc.
+            for i in range(1, total_seats + 1):
+                seat = Seat(
+                    event_id=event_id,
+                    section_id=section.section_id,
+                    seat_number=f"{name}-{i:03d}",
+                    status='available'
+                )
+                db.session.add(seat)
+
+            total_seats_created += total_seats
+            created_sections.append(section.to_dict())
+
+        db.session.commit()
+
+        # Publish availability update
+        publish_seat_event('seat.availability.updated', {
+            'event_id': event_id,
+            'available_seats': total_seats_created
+        })
+
+        return success({
+            'event_id': event_id,
+            'sections': created_sections,
+            'total_seats': total_seats_created
+        }), 201
+
+    except Exception as e:
+        db.session.rollback()
+        return error(f"Failed to create sections: {str(e)}", 500)
+
+
 @app.route('/seats/event/<int:event_id>')
 def get_seats_by_event(event_id):
     """SEAT-01: Get all seats for an event with section info."""
