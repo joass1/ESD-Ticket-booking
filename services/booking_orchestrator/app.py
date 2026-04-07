@@ -516,6 +516,19 @@ def request_refund(booking_id):
     except requests.exceptions.RequestException as e:
         return error(f"Booking service unreachable: {str(e)}", 503)
 
+    # ---- Step 1b: Check if ticket has been used (scanned at entry) ----
+    try:
+        ticket_resp = requests.get(
+            f"{TICKET_SERVICE_URL}/tickets/booking/{booking_id}",
+            timeout=10
+        )
+        if ticket_resp.status_code == 200:
+            ticket_data = ticket_resp.json().get('data', {})
+            if ticket_data.get('status') == 'used':
+                return error("Cannot refund — ticket has already been scanned at entry", 409)
+    except requests.exceptions.RequestException:
+        pass  # Ticket service unreachable — allow refund to proceed
+
     # ---- Step 2: Check 24h cutoff ----
     try:
         event_resp = requests.get(
@@ -577,10 +590,14 @@ def request_refund(booking_id):
         service_fee = round(amount * 0.10, 2)
         net_refund = round(amount - service_fee, 2)
 
+        # Look up saga to get phone for SMS notifications
+        saga = SagaLog.query.filter_by(booking_id=booking_id).first()
+
         publish_booking_event('booking.refund.requested', {
             'booking_id': booking_id,
             'user_id': user_id,
             'email': booking.get('email', ''),
+            'phone': saga.phone if saga else '',
             'amount': amount,
             'event_id': booking['event_id'],
             'refund_type': 'voluntary'

@@ -265,6 +265,7 @@ def handle_refund_process(ch, method, properties, body):
         service_fee = data['service_fee']
         user_id = data['user_id']
         email = data['email']
+        phone = data.get('phone', '')
         event_id = data['event_id']
         refund_type = data.get('refund_type', 'voluntary')
 
@@ -303,6 +304,7 @@ def handle_refund_process(ch, method, properties, body):
                         'booking_id': booking_id,
                         'user_id': user_id,
                         'email': email,
+                        'phone': phone,
                         'refund_amount': float(refund_amount),
                         'original_amount': float(original_amount),
                         'service_fee': float(service_fee),

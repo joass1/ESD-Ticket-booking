@@ -10,6 +10,7 @@ import WaitlistPage from './pages/WaitlistPage.jsx';
 import BookingHistoryPage from './pages/BookingHistoryPage.jsx';
 import BookingPage from './pages/BookingPage.jsx';
 import CreateEventPage from './pages/CreateEventPage.jsx';
+import ScannerPage from './pages/ScannerPage.jsx';
 
 const router = createBrowserRouter([
   {
@@ -23,6 +24,7 @@ const router = createBrowserRouter([
       { path: 'events/:eventId/book', element: <BookingPage /> },
       { path: 'events/:eventId/waitlist', element: <WaitlistPage /> },
       { path: 'bookings', element: <BookingHistoryPage /> },
+      { path: 'scanner', element: <ScannerPage /> },
     ],
   },
 ]);

@@ -109,6 +109,7 @@ def handle_refund_request(ch, method, properties, body):
         booking_id = data['booking_id']
         user_id = data['user_id']
         email = data['email']
+        phone = data.get('phone', '')
         amount = data['amount']
         event_id = data['event_id']
 
@@ -146,6 +147,7 @@ def handle_refund_request(ch, method, properties, body):
                 'booking_id': booking_id,
                 'user_id': user_id,
                 'email': email,
+                'phone': phone,
                 'refund_amount': float(refund_amount),
                 'original_amount': float(original_amount),
                 'service_fee': float(service_fee),

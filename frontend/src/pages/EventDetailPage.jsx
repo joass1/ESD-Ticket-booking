@@ -189,7 +189,7 @@ export default function EventDetailPage() {
           </p>
           <div className="flex justify-center gap-3">
             <Link
-              to={`/events/${eventId}/waitlist`}
+              to={`/events/${eventId}/waitlist?section=${encodeURIComponent(waitlistPrompt.name)}`}
               className="px-5 py-2 bg-accent hover:bg-accent-hover text-white rounded-lg text-sm font-medium transition-colors"
             >
               Join Waitlist

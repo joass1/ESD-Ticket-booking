@@ -5,6 +5,7 @@ import {
   CalendarDays,
   ClipboardList,
   ChevronDown,
+  ScanLine,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button, buttonVariants } from '@/components/ui/button';
@@ -16,6 +17,7 @@ const DEMO_USERS = ['user_001', 'user_002', 'user_003', 'admin'];
 const NAV_ITEMS = [
   { to: '/', label: 'Events', Icon: CalendarDays },
   { to: '/bookings', label: 'My Bookings', Icon: ClipboardList },
+  { to: '/scanner', label: 'Scanner', Icon: ScanLine, adminOnly: true },
 ];
 
 function UserSelector({ userId, setUserId, onSelect, fullWidth = false }) {
@@ -141,7 +143,7 @@ export default function Header({ userId, setUserId }) {
 
         {/* Desktop nav */}
         <div className="hidden items-center gap-1 md:flex">
-          {NAV_ITEMS.map((item) => (
+          {NAV_ITEMS.filter((item) => !item.adminOnly || userId === 'admin').map((item) => (
             <Link
               key={item.to}
               to={item.to}
@@ -188,7 +190,7 @@ export default function Header({ userId, setUserId }) {
           )}
         >
           <div className="grid gap-y-1">
-            {NAV_ITEMS.map((item) => (
+            {NAV_ITEMS.filter((item) => !item.adminOnly || userId === 'admin').map((item) => (
               <Link
                 key={item.to}
                 to={item.to}

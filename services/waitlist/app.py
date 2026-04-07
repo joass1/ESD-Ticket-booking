@@ -65,6 +65,7 @@ def publish_event(exchange, routing_key, payload):
             setup_exchange(amqp_channel, 'seat_topic', 'topic')
             setup_exchange(amqp_channel, 'waitlist_topic', 'topic')
             setup_exchange(amqp_channel, 'event_lifecycle', 'topic')
+            setup_exchange(amqp_channel, 'booking_topic', 'topic')
         publish_message(amqp_channel, exchange, routing_key, json.dumps(payload))
         print(f"[Waitlist] Published {routing_key}")
     except Exception as e:
@@ -196,6 +197,26 @@ def get_position(event_id, user_id):
 
 
 # ============================================
+# Position Recalculation
+# ============================================
+
+def recalculate_positions(event_id, section=None):
+    """Recalculate positions for waiting users in an event (optionally per section)."""
+    query = WaitlistEntry.query.filter_by(
+        event_id=event_id, status='waiting'
+    )
+    if section:
+        query = query.filter_by(preferred_section=section)
+    entries = query.order_by(WaitlistEntry.position.asc()).all()
+
+    for i, entry in enumerate(entries, start=1):
+        entry.position = i
+
+    db.session.commit()
+    print(f"[Waitlist] Recalculated positions for event {event_id} section={section or 'all'}: {len(entries)} waiting")
+
+
+# ============================================
 # AMQP Consumer #1: seat.released.* (WAIT-02)
 # ============================================
 
@@ -213,10 +234,18 @@ def handle_seat_released(ch, method, properties, body):
         print(f"[Waitlist] Seat released: event={event_id} seat={seat_id} source={source}")
 
         with app.app_context():
-            # Find first waiting user for this event
-            entry = WaitlistEntry.query.filter_by(
+            # Find first waiting user for this event matching the released section
+            query = WaitlistEntry.query.filter_by(
                 event_id=event_id, status='waiting'
-            ).order_by(WaitlistEntry.position.asc()).with_for_update().first()
+            )
+            if section:
+                query = query.filter_by(preferred_section=section)
+            entry = query.order_by(WaitlistEntry.position.asc()).with_for_update().first()
+
+            if not entry and section:
+                # No match for this section — don't fall back to other sections
+                print(f"[Waitlist] No waiting users for event {event_id} section {section}, seat stays available")
+                return
 
             if not entry:
                 print(f"[Waitlist] No waiting users for event {event_id}, seat stays available")
@@ -247,6 +276,9 @@ def handle_seat_released(ch, method, properties, body):
                 'section': section,
                 'promotion_expires_at': entry.promotion_expires_at.isoformat()
             })
+
+            # Recalculate positions for remaining waiters in this section
+            recalculate_positions(event_id, entry.preferred_section)
 
             print(f"[Waitlist] Promoted user {entry.user_id} (entry {entry.entry_id}) for seat {seat_id}")
 
@@ -336,6 +368,43 @@ def handle_cancel(ch, method, properties, body):
 
 
 # ============================================
+# AMQP Consumer #4: booking.confirmed (clear waitlist after booking)
+# ============================================
+
+def handle_booking_confirmed(ch, method, properties, body):
+    """Clear promoted waitlist entry after user completes booking."""
+    try:
+        msg = json.loads(body)
+        user_id = msg.get('user_id')
+        event_id = msg.get('event_id')
+        seat_id = msg.get('seat_id')
+
+        print(f"[Waitlist] Booking confirmed: user={user_id} event={event_id} seat={seat_id}")
+
+        with app.app_context():
+            entry = WaitlistEntry.query.filter_by(
+                event_id=event_id, user_id=str(user_id), status='promoted'
+            ).first()
+
+            if entry:
+                section = entry.preferred_section
+                entry.status = 'booked'
+                db.session.commit()
+
+                # Recalculate positions for remaining waiters in this section
+                recalculate_positions(event_id, section)
+
+                print(f"[Waitlist] Cleared entry {entry.entry_id} for user {user_id} (booking complete)")
+            else:
+                print(f"[Waitlist] No promoted entry found for user {user_id} event {event_id} — not a waitlist booking")
+
+    except Exception as e:
+        print(f"[Waitlist] Error handling booking confirmed: {e}")
+    finally:
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+
+
+# ============================================
 # APScheduler: Promotion Expiry Check (WAIT-03, WAIT-04)
 # ============================================
 
@@ -370,8 +439,12 @@ def check_expired_promotions():
                     'entry_id': entry.entry_id,
                     'event_id': event_id,
                     'user_id': entry.user_id,
-                    'email': entry.email
+                    'email': entry.email,
+                    'phone': entry.phone
                 })
+
+                # Recalculate positions for remaining waiters in this section
+                recalculate_positions(event_id, entry.preferred_section)
 
                 print(f"[Waitlist] Expired promotion for entry {entry.entry_id}, cascading seat {seat_id}")
 
@@ -406,6 +479,13 @@ def start_all_consumers():
         target=lambda: start_consumer(
             'waitlist_cancel_queue', 'event_lifecycle',
             ['event.cancelled.*'], handle_cancel
+        ), daemon=True
+    ).start()
+
+    threading.Thread(
+        target=lambda: start_consumer(
+            'waitlist_booking_queue', 'booking_topic',
+            ['booking.confirmed'], handle_booking_confirmed
         ), daemon=True
     ).start()
 

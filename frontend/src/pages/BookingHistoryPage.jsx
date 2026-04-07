@@ -134,7 +134,7 @@ function BookingCard({ booking, userId, onRefundSuccess }) {
           <button
             onClick={handleViewTicket}
             disabled={ticketLoading}
-            className="flex items-center gap-1.5 text-sm text-accent hover:text-accent-hover transition-colors"
+            className="flex items-center gap-1.5 text-sm text-primary hover:text-primary/80 transition-colors"
           >
             <QrCode size={14} />
             {ticketLoading ? 'Loading...' : showTicket ? 'Hide Ticket' : 'View Ticket'}

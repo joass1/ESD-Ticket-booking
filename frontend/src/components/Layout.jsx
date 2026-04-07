@@ -11,7 +11,7 @@ export default function Layout() {
     <div className="min-h-screen bg-bg-primary">
       <Header userId={userId} setUserId={setUserId} />
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <Outlet context={{ userId, setUserId }} />
+        <Outlet key={userId} context={{ userId, setUserId }} />
       </main>
     </div>
   );

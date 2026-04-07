@@ -96,7 +96,7 @@ The frontend provides a user selector in the header:
 | `user_001` | Regular user | Browse events, book seats, join waitlist, request refunds |
 | `user_002` | Regular user | Same as above |
 | `user_003` | Regular user | Same as above |
-| `admin` | Administrator | All of the above + create events, cancel events |
+| `admin` | Administrator | Browse events, create events, cancel events (cannot purchase tickets) |
 
 ### Test Payment
 
@@ -164,7 +164,7 @@ Message broker documentation for all RabbitMQ exchanges, queues, and message pay
 npx @asyncapi/cli start studio docs/asyncapi.yaml
 ```
 
-Open **http://localhost:3210** to visualize the messaging topology.
+The URL will be shown in the terminal output (port is assigned dynamically).
 
 ### OutSystems Event Service API
 

@@ -207,6 +207,59 @@ def invalidate_ticket_by_booking(booking_id):
     })
 
 
+@app.route('/tickets/validate', methods=['POST'])
+def validate_ticket():
+    """Validate a ticket QR code — used by admin scanner at event entry."""
+    data = flask_request.get_json()
+    if not data or 'qr_data' not in data:
+        return error("qr_data is required", 400)
+
+    qr_data = data['qr_data'].strip()
+    parts = qr_data.split(':')
+    if len(parts) != 2:
+        return error("Invalid QR code format", 400)
+
+    try:
+        booking_id = int(parts[0])
+    except ValueError:
+        return error("Invalid QR code format", 400)
+
+    submitted_hash = parts[1]
+
+    # Verify hash
+    expected_hash = hashlib.sha256(
+        f"{booking_id}:{QR_SECRET}".encode()
+    ).hexdigest()[:16]
+
+    if submitted_hash != expected_hash:
+        return error("Invalid QR code — hash mismatch", 403)
+
+    # Look up ticket
+    ticket = Ticket.query.filter_by(booking_id=booking_id).first()
+    if not ticket:
+        return error("Ticket not found", 404)
+
+    if ticket.status == 'used':
+        return error("Ticket already used", 409)
+
+    if ticket.status == 'invalidated':
+        return error("Ticket has been invalidated (refunded/cancelled)", 410)
+
+    # Mark as used
+    ticket.status = 'used'
+    db.session.commit()
+
+    return success({
+        'ticket_id': ticket.ticket_id,
+        'booking_id': ticket.booking_id,
+        'event_id': ticket.event_id,
+        'user_id': ticket.user_id,
+        'seat_id': ticket.seat_id,
+        'status': 'used',
+        'message': 'Ticket validated successfully'
+    })
+
+
 @app.route('/tickets/<int:ticket_id>')
 def get_ticket_by_id(ticket_id):
     """Retrieve ticket by ticket_id with base64 QR image."""

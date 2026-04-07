@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Link, useParams, useOutletContext } from 'react-router-dom';
+import { Link, useParams, useSearchParams, useOutletContext } from 'react-router-dom';
 import { ArrowLeft, Clock, Users } from 'lucide-react';
 import { api } from '../api/client.js';
 import LoadingSpinner from '../components/ui/LoadingSpinner.jsx';
@@ -8,16 +8,20 @@ const POLL_INTERVAL = 10000; // 10 seconds
 
 export default function WaitlistPage() {
   const { eventId } = useParams();
+  const [searchParams] = useSearchParams();
   const { userId } = useOutletContext();
+  const sectionFromUrl = searchParams.get('section');
   const [event, setEvent] = useState(null);
   const [sections, setSections] = useState([]);
   const [selectedSection, setSelectedSection] = useState('');
   const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
   const [loading, setLoading] = useState(true);
   const [joining, setJoining] = useState(false);
   const [error, setError] = useState(null);
   const [position, setPosition] = useState(null);
   const [waitlistStatus, setWaitlistStatus] = useState(null);
+  const [promotedSeatId, setPromotedSeatId] = useState(null);
   const pollRef = useRef(null);
 
   // Fetch event info and sections
@@ -33,7 +37,13 @@ export default function WaitlistPage() {
         const allSecs = sectionData?.sections || (Array.isArray(sectionData) ? sectionData : []);
         const soldOut = allSecs.filter((s) => s.available_seats === 0);
         setSections(soldOut);
-        if (soldOut.length > 0) setSelectedSection(soldOut[0].name);
+        // Auto-select section from URL param, or fall back to first sold-out section
+        const match = sectionFromUrl && soldOut.find((s) => s.name === sectionFromUrl);
+        if (match) {
+          setSelectedSection(match.name);
+        } else if (soldOut.length > 0) {
+          setSelectedSection(soldOut[0].name);
+        }
       } catch (err) {
         setError(err.message || 'Failed to load event data');
       } finally {
@@ -49,6 +59,7 @@ export default function WaitlistPage() {
       const data = await api(`/api/waitlist/position/${eventId}/${userId}`);
       setPosition(data.position);
       setWaitlistStatus(data.status);
+      if (data.promoted_seat_id) setPromotedSeatId(data.promoted_seat_id);
     } catch {
       // User not on waitlist yet - ignore
     }
@@ -74,20 +85,22 @@ export default function WaitlistPage() {
     setJoining(true);
     setError(null);
     try {
-      await api('/api/waitlist/join', {
+      const data = await api('/api/waitlist/join', {
         method: 'POST',
         body: JSON.stringify({
           user_id: userId,
           event_id: Number(eventId),
           email,
+          phone: phone || undefined,
           preferred_section: selectedSection,
         }),
       });
-      // Immediately fetch position after joining
-      await pollPosition();
+      // Set position directly from join response
+      setPosition(data.position);
+      setWaitlistStatus('waiting');
     } catch (err) {
       if (err.status === 409) {
-        // Already on waitlist
+        // Already on waitlist — try polling for current position
         await pollPosition();
       } else {
         setError(err.message || 'Failed to join waitlist');
@@ -125,13 +138,13 @@ export default function WaitlistPage() {
       {/* Already on waitlist - show position */}
       {position !== null ? (
         <div className="bg-bg-card rounded-xl border border-white/10 p-6 text-center space-y-4">
-          <div className="w-16 h-16 mx-auto rounded-full bg-accent/20 flex items-center justify-center">
-            <Users size={28} className="text-accent" />
+          <div className="w-16 h-16 mx-auto rounded-full bg-primary/20 flex items-center justify-center">
+            <Users size={28} className="text-primary" />
           </div>
 
           <div>
             <p className="text-text-secondary text-sm">Your position in queue</p>
-            <p className="text-4xl font-bold text-accent mt-1">#{position}</p>
+            <p className="text-4xl font-bold text-primary mt-1">#{position}</p>
           </div>
 
           <div className="flex items-center justify-center gap-2 text-sm">
@@ -152,9 +165,9 @@ export default function WaitlistPage() {
             </span>
           </div>
 
-          {waitlistStatus === 'promoted' && (
+          {waitlistStatus === 'promoted' && promotedSeatId && (
             <Link
-              to={`/events/${eventId}`}
+              to={`/events/${eventId}/book?seatId=${promotedSeatId}`}
               className="inline-block px-5 py-2 bg-accent hover:bg-accent-hover text-white rounded-lg text-sm font-medium transition-colors"
             >
               Complete Booking
@@ -181,6 +194,17 @@ export default function WaitlistPage() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="your@email.com"
+              className="w-full bg-bg-primary text-text-primary placeholder-text-secondary border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-accent"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm text-text-secondary mb-1.5">Phone (for SMS notification)</label>
+            <input
+              type="tel"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              placeholder="+65 9123 4567"
               className="w-full bg-bg-primary text-text-primary placeholder-text-secondary border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-accent"
             />
           </div>
