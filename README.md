@@ -96,7 +96,7 @@ The frontend provides a user selector in the header:
 | `user_001` | Regular user | Browse events, book seats, join waitlist, request refunds |
 | `user_002` | Regular user | Same as above |
 | `user_003` | Regular user | Same as above |
-| `admin` | Administrator | Browse events, create events, cancel events (cannot purchase tickets) |
+| `admin` | Administrator | Browse events, create events, cancel events, scan QR tickets (cannot purchase tickets) |
 
 ### Test Payment
 
@@ -132,6 +132,8 @@ The platform uses 8 atomic microservices and 1 composite orchestrator:
 | Stripe API | Payment processing (create intents, verify, refund) |
 | SMU Lab Notification API | Email, SMS, and OTP verification |
 | OutSystems Cloud | Event Service hosting (REST API) |
+| Redis | Distributed in-memory lock store for concurrent seat reservation |
+| html5-qrcode (ZXing) | Client-side QR code scanning via WebRTC camera API |
 
 ### Beyond-the-Lectures (BTL) Features
 
@@ -139,6 +141,7 @@ The platform uses 8 atomic microservices and 1 composite orchestrator:
 - **Redis Distributed Locking** -- Dual-lock pattern (SET NX EX + SELECT FOR UPDATE) for concurrent seat reservation
 - **Flask-SocketIO WebSocket** -- Real-time e-ticket delivery to the browser
 - **Multi-threading** -- Each service runs Flask HTTP and pika AMQP consumers concurrently using Python daemon threads
+- **QR Code Ticket Validation** -- Client-side QR scanning via html5-qrcode (ZXing + WebRTC) with server-side SHA-256 hash verification; scanned tickets blocked from refunds
 
 ---
 
@@ -186,6 +189,7 @@ User selects a seat and completes payment through a multi-step saga:
 4. Orchestrator verifies payment, confirms the seat, updates the booking, and publishes `booking.confirmed`
 5. Ticket Service generates a QR code and pushes it to the frontend via WebSocket
 6. Notification Service sends confirmation email + SMS
+7. At the venue, admin scans the QR code via the Scanner page — Ticket Service validates the SHA-256 hash and marks the ticket as used (post-scan refund guard prevents refunds after entry)
 
 If payment times out, APScheduler releases the seat, expires the booking, and notifies the user.
 
@@ -194,10 +198,10 @@ If payment times out, APScheduler releases the seat, expires the booking, and no
 When a seat is released, the Waitlist Service promotes the next user via AMQP:
 
 1. Seat Service publishes `seat.released` to RabbitMQ
-2. Waitlist Service promotes the first waiting user and requests a seat reservation via AMQP
+2. Waitlist Service promotes the first waiting user in the matching section queue and requests a seat reservation via AMQP
 3. Seat Service reserves the seat and confirms via AMQP
-4. Notification Service sends "Book within 10 minutes" email + SMS
-5. If the user doesn't book in time, APScheduler expires the promotion and cascades to the next user
+4. Notification Service sends SMS: "A Seat is Available, Book within 10 minutes!"
+5. If the user doesn't book in time, APScheduler expires the promotion, sends expiry SMS, and cascades to the next user in the section queue
 
 ### Scenario 3: Event Cancellation (Fan-Out)
 
@@ -206,7 +210,7 @@ Admin cancels an event through the Orchestrator bridge:
 1. Frontend calls Booking Orchestrator (since OutSystems cannot publish to RabbitMQ)
 2. Orchestrator cancels the event in OutSystems and publishes `event.cancelled` to RabbitMQ
 3. Five services react in parallel: Seat (releases all seats), Booking (marks as pending_refund), Ticket (invalidates all tickets), Waitlist (cancels entries), Notification (logs cancellation)
-4. Refund chain: Charging calculates fees (0% for event cancellation) -> Payment processes Stripe refund -> Booking marks as refunded -> Notification sends refund email
+4. Refund chain: Charging calculates fees (0% for event cancellation) -> Payment processes Stripe refund with up to 3 retries -> Booking marks as refunded -> Notification sends refund email + SMS
 
 ---
 
@@ -219,7 +223,9 @@ ESD-Ticket-booking/
 │       ├── api/client.js      # API client with OutSystems PascalCase normalization
 │       ├── components/        # UI components (SeatMap, BookingWizard, etc.)
 │       ├── hooks/useSocket.js # WebSocket hook for ticket delivery
-│       └── pages/             # Route pages
+│       └── pages/             # Route pages (Events, EventDetail, Booking, Waitlist, BookingHistory, Scanner)
+├── scripts/
+│   └── fill_seats.py          # Test utility: fill seats for waitlist testing
 ├── services/
 │   ├── booking/               # Booking Service (Flask, port 5002)
 │   ├── booking_orchestrator/  # Composite Orchestrator (Flask, port 5010)
@@ -236,7 +242,9 @@ ESD-Ticket-booking/
 ├── docker-compose.yml         # All services orchestration
 ├── docs/
 │   ├── openapi.yaml           # REST API documentation (OpenAPI 3.0)
-│   └── asyncapi.yaml          # AMQP messaging documentation (AsyncAPI 2.6)
+│   ├── asyncapi.yaml          # AMQP messaging documentation (AsyncAPI 2.6)
+│   ├── apispec.json           # Exported OpenAPI spec (JSON)
+│   └── demo-script.md         # 3-minute demo recording script
 ├── overview.md                # Full technical overview
 ├── OUTSYSTEMS_MIGRATION_GUIDE.md  # OutSystems migration details
 └── .env                       # Environment variables (not committed)
