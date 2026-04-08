@@ -149,6 +149,8 @@ The platform uses 8 atomic microservices and 1 composite orchestrator:
 
 ### REST API (OpenAPI / Swagger)
 
+The API specification is located at `docs/openapi.yaml` (OpenAPI 3.0) and `docs/apispec.json` (JSON export).
+
 Interactive API documentation is available via Swagger UI:
 
 ```bash
@@ -156,6 +158,8 @@ npx swagger-ui-watcher docs/openapi.yaml -p 8081
 ```
 
 Open **http://localhost:8081** to browse all endpoints with request/response schemas.
+
+You can also import `docs/apispec.json` directly into https://editor.swagger.io.
 
 To use the "Try it out" feature, make sure Docker services are running. Kong CORS is pre-configured to allow requests from `localhost:8081`.
 
