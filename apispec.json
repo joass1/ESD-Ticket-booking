@@ -1,0 +1,3669 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "ESD Ticket Booking Platform API",
+    "description": "Microservices-based event ticket booking platform for IS213.\n\nAll responses follow a standard envelope:\n- **Success**: `{\"code\": N, \"data\": {...}}`\n- **Error**: `{\"code\": N, \"message\": \"...\"}`\n\nAll endpoints accept an optional `X-Correlation-ID` header (UUID). If not provided, one is auto-generated for distributed tracing.\n",
+    "version": "1.0.0",
+    "contact": {
+      "name": "ESD Team"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8000",
+      "description": "Kong API Gateway (local development)"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Events",
+      "description": "Event management (OutSystems backend)"
+    },
+    {
+      "name": "Bookings",
+      "description": "Booking CRUD operations"
+    },
+    {
+      "name": "Seats",
+      "description": "Seat and section management with Redis+MySQL dual locking"
+    },
+    {
+      "name": "Payments",
+      "description": "Stripe payment processing"
+    },
+    {
+      "name": "Notifications",
+      "description": "Notification history and OTP verification (SMU Lab Notification API)"
+    },
+    {
+      "name": "Tickets",
+      "description": "Ticket generation with QR codes"
+    },
+    {
+      "name": "Waitlist",
+      "description": "Event waitlist management"
+    },
+    {
+      "name": "Fees",
+      "description": "Service fee and refund tracking (Charging service)"
+    },
+    {
+      "name": "Orchestrator",
+      "description": "Booking Orchestrator \u00e2\u20ac\u201d saga-based composite service"
+    }
+  ],
+  "paths": {
+    "/api/events": {
+      "get": {
+        "tags": [
+          "Events"
+        ],
+        "summary": "List events",
+        "description": "Retrieve all events, optionally filtered by status or category.\nNote: OutSystems returns PascalCase fields (Id, Name, EventDate, etc.) \u00e2\u20ac\u201d the frontend normalizes to snake_case.\n",
+        "operationId": "listEvents",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "upcoming",
+                "ongoing",
+                "cancelled"
+              ]
+            },
+            "description": "Filter by event status"
+          },
+          {
+            "name": "category",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Filter by event category"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of events",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/Event"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Events"
+        ],
+        "summary": "Create event (OutSystems direct)",
+        "description": "Creates an event directly in OutSystems. Does NOT create seat sections \u00e2\u20ac\u201d use\n`POST /api/orchestrator/events/create` for the full flow (event + seats).\n",
+        "operationId": "createEventDirect",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "event_date",
+                  "total_seats"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "example": "Bruno Mars: 24K Magic World Tour"
+                  },
+                  "description": {
+                    "type": "string",
+                    "example": "An explosive night of funk, soul, and pop."
+                  },
+                  "category": {
+                    "type": "string",
+                    "example": "Concert"
+                  },
+                  "event_date": {
+                    "type": "string",
+                    "example": "2026-11-15 20:00:00"
+                  },
+                  "venue": {
+                    "type": "string",
+                    "example": "National Stadium, Singapore"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "upcoming",
+                      "ongoing"
+                    ],
+                    "default": "upcoming"
+                  },
+                  "total_seats": {
+                    "type": "integer",
+                    "example": 1600
+                  },
+                  "available_seats": {
+                    "type": "integer",
+                    "example": 1600
+                  },
+                  "price_min": {
+                    "type": "number",
+                    "format": "double",
+                    "example": 108.0
+                  },
+                  "price_max": {
+                    "type": "number",
+                    "format": "double",
+                    "example": 398.0
+                  },
+                  "image_url": {
+                    "type": "string",
+                    "format": "uri",
+                    "example": "https://images.unsplash.com/photo-1501386761578-eac5c94b800a?w=800"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Event created (OutSystems does not return the new event ID)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/events/{event_id}": {
+      "get": {
+        "tags": [
+          "Events"
+        ],
+        "summary": "Get event by ID (via /events path)",
+        "operationId": "getEventViaEvents",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          },
+          {
+            "name": "event_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Event ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Event details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/Event"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/event/{event_id}": {
+      "get": {
+        "tags": [
+          "Events"
+        ],
+        "summary": "Get event by ID",
+        "operationId": "getEvent",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          },
+          {
+            "name": "event_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Event ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Event details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/Event"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/event/update/{event_id}": {
+      "put": {
+        "tags": [
+          "Events"
+        ],
+        "summary": "Update event (OutSystems)",
+        "description": "Partial update of an event in OutSystems. Only provided fields are changed.\nUsed by the Booking Orchestrator to sync AvailableSeats.\n",
+        "operationId": "updateEvent",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          },
+          {
+            "name": "event_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Event ID"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "category": {
+                    "type": "string"
+                  },
+                  "event_date": {
+                    "type": "string",
+                    "format": "date"
+                  },
+                  "venue": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string"
+                  },
+                  "total_seats": {
+                    "type": "integer"
+                  },
+                  "price_min": {
+                    "type": "number",
+                    "format": "double"
+                  },
+                  "price_max": {
+                    "type": "number",
+                    "format": "double"
+                  },
+                  "image_url": {
+                    "type": "string"
+                  },
+                  "AvailableSeats": {
+                    "type": "integer",
+                    "description": "PascalCase \u00e2\u20ac\u201d used by orchestrator availability sync"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Event updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/Event"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/event/cancel/{event_id}": {
+      "post": {
+        "tags": [
+          "Events"
+        ],
+        "summary": "Cancel event (OutSystems direct)",
+        "description": "Cancels an event directly in OutSystems. Does NOT publish to RabbitMQ \u00e2\u20ac\u201d\nuse `POST /api/orchestrator/events/{id}/cancel` for the full cancel flow\nthat triggers downstream refunds and notifications.\n",
+        "operationId": "cancelEventDirect",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          },
+          {
+            "name": "event_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Event ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Event cancelled in OutSystems",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/Event"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/event/delete/{event_id}": {
+      "delete": {
+        "tags": [
+          "Events"
+        ],
+        "summary": "Delete event (OutSystems)",
+        "description": "Permanently deletes an event from the OutSystems database.",
+        "operationId": "deleteEvent",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          },
+          {
+            "name": "event_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Event ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Event deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/Event"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/event/fix-statuses": {
+      "post": {
+        "tags": [
+          "Events"
+        ],
+        "summary": "Fix empty event statuses (OutSystems utility)",
+        "description": "Bulk-updates all events with empty Status fields to \"upcoming\".\nUtility endpoint to fix data quality issues in OutSystems.\n",
+        "operationId": "fixStatuses",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Statuses fixed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/Event"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/bookings": {
+      "get": {
+        "tags": [
+          "Bookings"
+        ],
+        "summary": "List bookings",
+        "description": "Retrieve bookings, optionally filtered by event or status.",
+        "operationId": "listBookings",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          },
+          {
+            "name": "event_id",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Filter by event ID"
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "pending",
+                "confirmed",
+                "cancelled",
+                "failed",
+                "expired",
+                "pending_refund",
+                "refunded"
+              ]
+            },
+            "description": "Filter by booking status"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of bookings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/Booking"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Bookings"
+        ],
+        "summary": "Create a booking",
+        "operationId": "createBooking",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateBookingRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Booking created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/Booking"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/bookings/{booking_id}": {
+      "get": {
+        "tags": [
+          "Bookings"
+        ],
+        "summary": "Get booking by ID",
+        "operationId": "getBooking",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          },
+          {
+            "name": "booking_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Booking ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Booking details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/Booking"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Bookings"
+        ],
+        "summary": "Update a booking",
+        "operationId": "updateBooking",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          },
+          {
+            "name": "booking_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Booking ID"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateBookingRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Booking updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/Booking"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/bookings/user/{user_id}": {
+      "get": {
+        "tags": [
+          "Bookings"
+        ],
+        "summary": "Get user's bookings",
+        "description": "Retrieve all bookings for a user, sorted newest first.",
+        "operationId": "getUserBookings",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "User ID (Firebase UID)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "User's bookings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/Booking"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/seats/setup": {
+      "post": {
+        "tags": [
+          "Seats"
+        ],
+        "summary": "Create sections and seats for an event",
+        "operationId": "setupSeats",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetupSeatsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Sections and seats created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "409": {
+            "description": "Sections already exist for this event",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/seats/event/{event_id}": {
+      "get": {
+        "tags": [
+          "Seats"
+        ],
+        "summary": "Get all seats for an event",
+        "description": "Returns all seats with their section information.",
+        "operationId": "getEventSeats",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          },
+          {
+            "name": "event_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Event ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "All seats with section info",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/Seat"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/seats/availability/{event_id}": {
+      "get": {
+        "tags": [
+          "Seats"
+        ],
+        "summary": "Get seat availability per section",
+        "description": "Returns available seat count per section for the given event.",
+        "operationId": "getSeatAvailability",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          },
+          {
+            "name": "event_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Event ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Availability counts per section",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/SectionAvailability"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No sections found for this event",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/seats/reserve": {
+      "post": {
+        "tags": [
+          "Seats"
+        ],
+        "summary": "Reserve a seat",
+        "description": "Reserve a seat using Redis+MySQL dual locking. If the requested seat is\ntaken but another seat in the same section is available, the service may\nauto-assign a different seat (indicated by `auto_assigned: true` and the\n`originally_requested` field in the response). If the entire section is\nfull, returns 409 with an `other_sections` array of sections that still\nhave availability.\n",
+        "operationId": "reserveSeat",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SeatActionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Seat reserved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/ReserveSeatResponse"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "409": {
+            "description": "Seat or section unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "other_sections": {
+                          "type": "array",
+                          "description": "Sections with remaining availability (returned when entire section is full)",
+                          "items": {
+                            "$ref": "#/components/schemas/SectionAvailability"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/seats/release": {
+      "post": {
+        "tags": [
+          "Seats"
+        ],
+        "summary": "Release a reserved seat",
+        "description": "Release a seat reservation. Returns 403 if the caller is not the lock owner.",
+        "operationId": "releaseSeat",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SeatActionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Seat released",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not the lock owner",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/seats/confirm": {
+      "post": {
+        "tags": [
+          "Seats"
+        ],
+        "summary": "Confirm a seat booking",
+        "description": "Transitions a reserved seat to booked status and removes the Redis lock.",
+        "operationId": "confirmSeat",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SeatActionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Seat confirmed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/payments/create": {
+      "post": {
+        "tags": [
+          "Payments"
+        ],
+        "summary": "Create a Stripe PaymentIntent",
+        "description": "Creates a Stripe PaymentIntent in SGD currency.",
+        "operationId": "createPayment",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePaymentRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "PaymentIntent created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/CreatePaymentResponse"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/payments/verify": {
+      "post": {
+        "tags": [
+          "Payments"
+        ],
+        "summary": "Verify a payment",
+        "description": "Verifies a Stripe PaymentIntent status and returns transaction details.",
+        "operationId": "verifyPayment",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyPaymentRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Payment verification result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/VerifyPaymentResponse"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/payments/transaction/{booking_id}": {
+      "get": {
+        "tags": [
+          "Payments"
+        ],
+        "summary": "Get transaction by booking ID",
+        "operationId": "getTransaction",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          },
+          {
+            "name": "booking_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Booking ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Transaction details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/Transaction"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/notifications/user/{user_id}": {
+      "get": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "Get notification history",
+        "operationId": "getUserNotifications",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "User ID (Firebase UID)"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 50
+            },
+            "description": "Maximum number of notifications to return"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Notification history",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/Notification"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/notifications/otp/send": {
+      "post": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "Send OTP via SMS",
+        "description": "Sends a one-time password to the given mobile number via Twilio Verify.",
+        "operationId": "sendOtp",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendOtpRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OTP sent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/SendOtpResponse"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/notifications/otp/verify": {
+      "post": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "Verify OTP code",
+        "operationId": "verifyOtp",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyOtpRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OTP verification result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/tickets/booking/{booking_id}": {
+      "get": {
+        "tags": [
+          "Tickets"
+        ],
+        "summary": "Get ticket by booking ID",
+        "description": "Returns the ticket for a booking, including a base64-encoded QR code image.",
+        "operationId": "getTicketByBooking",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          },
+          {
+            "name": "booking_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Booking ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Ticket with QR code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/Ticket"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/tickets/booking/{booking_id}/invalidate": {
+      "post": {
+        "tags": [
+          "Tickets"
+        ],
+        "summary": "Invalidate a ticket",
+        "description": "Marks a ticket as invalidated (used during refunds).",
+        "operationId": "invalidateTicket",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          },
+          {
+            "name": "booking_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Booking ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Ticket invalidated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/Ticket"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/tickets/{ticket_id}": {
+      "get": {
+        "tags": [
+          "Tickets"
+        ],
+        "summary": "Get ticket by ticket ID",
+        "operationId": "getTicketById",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          },
+          {
+            "name": "ticket_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Ticket ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Ticket details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/Ticket"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/tickets/validate": {
+      "post": {
+        "tags": [
+          "Tickets"
+        ],
+        "summary": "Validate ticket QR code",
+        "description": "Validates a scanned QR code at event entry. Verifies the HMAC hash,\nchecks ticket status, and marks it as \"used\". Returns 409 if already\nused, 410 if invalidated (refunded/cancelled), 403 if hash mismatch.\n\nQR data format: `{booking_id}:{sha256_hash_first_16_chars}`\n\nUsed by the admin QR scanner page (`/scanner`). The frontend enriches\nthe response with event name and seat details from the Event and Seat services.\n",
+        "operationId": "validateTicket",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "qr_data"
+                ],
+                "properties": {
+                  "qr_data": {
+                    "type": "string",
+                    "description": "Raw QR code data string (format booking_id:hash)",
+                    "example": "2:a1b2c3d4e5f6g7h8"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Ticket validated and marked as used",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "properties": {
+                            "ticket_id": {
+                              "type": "integer"
+                            },
+                            "booking_id": {
+                              "type": "integer"
+                            },
+                            "event_id": {
+                              "type": "integer"
+                            },
+                            "user_id": {
+                              "type": "string"
+                            },
+                            "seat_id": {
+                              "type": "integer"
+                            },
+                            "status": {
+                              "type": "string",
+                              "example": "used"
+                            },
+                            "message": {
+                              "type": "string",
+                              "example": "Ticket validated successfully"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid QR code format"
+          },
+          "403": {
+            "description": "QR code hash mismatch"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "Ticket already used"
+          },
+          "410": {
+            "description": "Ticket invalidated (refunded or event cancelled)"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/waitlist/join": {
+      "post": {
+        "tags": [
+          "Waitlist"
+        ],
+        "summary": "Join event waitlist",
+        "description": "Adds the user to the waitlist for a sold-out event. Returns 409 if already on waitlist.",
+        "operationId": "joinWaitlist",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JoinWaitlistRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Added to waitlist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/JoinWaitlistResponse"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "409": {
+            "description": "User already on waitlist for this event",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/waitlist/position/{event_id}/{user_id}": {
+      "get": {
+        "tags": [
+          "Waitlist"
+        ],
+        "summary": "Get waitlist position",
+        "description": "Returns the user's current position on the waitlist, along with promotion details if applicable.",
+        "operationId": "getWaitlistPosition",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          },
+          {
+            "name": "event_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Event ID"
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "User ID (Firebase UID)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Waitlist position",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/WaitlistPosition"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "User not on waitlist for this event",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/charging/event/{event_id}": {
+      "get": {
+        "tags": [
+          "Fees"
+        ],
+        "summary": "Get all fees for an event",
+        "description": "Returns all fee records for the event along with a summary (count, total fees, total refunds).",
+        "operationId": "getEventFees",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          },
+          {
+            "name": "event_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Event ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Event fee records with summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/EventFeeSummary"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/charging/booking/{booking_id}": {
+      "get": {
+        "tags": [
+          "Fees"
+        ],
+        "summary": "Get fee for a booking",
+        "operationId": "getBookingFee",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          },
+          {
+            "name": "booking_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Booking ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Fee record for the booking",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/FeeRecord"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/orchestrator/bookings/initiate": {
+      "post": {
+        "tags": [
+          "Orchestrator"
+        ],
+        "summary": "Initiate booking saga",
+        "description": "Starts the booking saga: validates the event, reserves a seat, creates a\nbooking record, and creates a Stripe PaymentIntent. Returns details needed\nfor the frontend to complete payment.\n",
+        "operationId": "initiateBooking",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InitiateBookingRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Saga initiated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/InitiateBookingResponse"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "description": "Admin user_id not permitted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Event not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Event cancelled, not bookable, or seat taken",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Payment creation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Downstream service unreachable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/orchestrator/bookings/confirm": {
+      "post": {
+        "tags": [
+          "Orchestrator"
+        ],
+        "summary": "Confirm booking saga",
+        "description": "Finalizes the booking saga after successful payment. Verifies payment,\nconfirms the seat, updates booking status, and triggers ticket generation\nand notifications via AMQP.\n",
+        "operationId": "confirmBooking",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmBookingRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Booking confirmed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/ConfirmBookingResponse"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "402": {
+            "description": "Payment verification failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Saga not in correct status for confirmation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/orchestrator/bookings/{booking_id}/refund": {
+      "post": {
+        "tags": [
+          "Orchestrator"
+        ],
+        "summary": "Voluntary refund",
+        "description": "Processes a voluntary refund for a confirmed booking. Refunds via Stripe,\ninvalidates the ticket, releases the seat, and applies a service fee.\nRefunds are blocked within 24 hours of the event.\n",
+        "operationId": "refundBooking",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          },
+          {
+            "name": "booking_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Booking ID"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefundBookingRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Refund processed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/RefundBookingResponse"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "User is not the booking owner",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Booking not in refundable status or within 24h cutoff",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/sagas/{saga_id}": {
+      "get": {
+        "tags": [
+          "Orchestrator"
+        ],
+        "summary": "Get saga status",
+        "description": "Returns the full SagaLog object for monitoring saga progress.",
+        "operationId": "getSagaStatus",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          },
+          {
+            "name": "saga_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Saga ID (UUID)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Saga log",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/SagaLog"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/orchestrator/events/create": {
+      "post": {
+        "tags": [
+          "Orchestrator"
+        ],
+        "summary": "Create event with seats",
+        "description": "Creates an event in OutSystems and sets up seat sections atomically.\nIf seat setup fails, the event creation is rolled back.\n",
+        "operationId": "createEvent",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateEventRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Event and seats created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/CreateEventResponse"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/orchestrator/events/{event_id}/cancel": {
+      "post": {
+        "tags": [
+          "Orchestrator"
+        ],
+        "summary": "Cancel an event",
+        "description": "Cancels an event in OutSystems and publishes a cancellation message to\nRabbitMQ to trigger downstream refund and notification workflows.\n",
+        "operationId": "cancelEvent",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationID"
+          },
+          {
+            "name": "event_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Event ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Event cancelled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/CancelEventResponse"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "Event is not in a cancellable state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "CorrelationID": {
+        "name": "X-Correlation-ID",
+        "in": "header",
+        "required": false,
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "description": "Correlation ID for distributed tracing. Auto-generated if not provided."
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "Invalid request parameters or body",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Resource not found",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      },
+      "InternalError": {
+        "description": "Internal server error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "SuccessEnvelope": {
+        "type": "object",
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "integer",
+            "description": "HTTP status code",
+            "example": 200
+          }
+        }
+      },
+      "ErrorEnvelope": {
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "integer",
+            "description": "HTTP status code",
+            "example": 400
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable error message",
+            "example": "Invalid request parameters"
+          }
+        }
+      },
+      "Event": {
+        "type": "object",
+        "properties": {
+          "event_id": {
+            "type": "integer",
+            "example": 1
+          },
+          "name": {
+            "type": "string",
+            "example": "Taylor Swift Eras Tour"
+          },
+          "description": {
+            "type": "string",
+            "example": "Concert at National Stadium"
+          },
+          "category": {
+            "type": "string",
+            "example": "Concert"
+          },
+          "event_date": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-06-15T19:00:00Z"
+          },
+          "venue": {
+            "type": "string",
+            "example": "National Stadium"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "upcoming",
+              "ongoing",
+              "cancelled"
+            ],
+            "example": "upcoming"
+          },
+          "total_seats": {
+            "type": "integer",
+            "example": 5000
+          },
+          "available_seats": {
+            "type": "integer",
+            "example": 3200
+          },
+          "price_min": {
+            "type": "number",
+            "format": "double",
+            "example": 88.0
+          },
+          "price_max": {
+            "type": "number",
+            "format": "double",
+            "example": 348.0
+          },
+          "image_url": {
+            "type": "string",
+            "format": "uri",
+            "example": "https://example.com/events/1/poster.jpg"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "Booking": {
+        "type": "object",
+        "properties": {
+          "booking_id": {
+            "type": "integer",
+            "example": 101
+          },
+          "user_id": {
+            "type": "string",
+            "example": "firebase_uid_abc123"
+          },
+          "event_id": {
+            "type": "integer",
+            "example": 1
+          },
+          "seat_id": {
+            "type": "integer",
+            "example": 42
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "example": "user@example.com"
+          },
+          "amount": {
+            "type": "number",
+            "format": "double",
+            "example": 128.0
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "confirmed",
+              "cancelled",
+              "failed",
+              "expired",
+              "pending_refund",
+              "refunded"
+            ],
+            "example": "confirmed"
+          },
+          "payment_intent_id": {
+            "type": "string",
+            "example": "pi_3abc123def456"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "CreateBookingRequest": {
+        "type": "object",
+        "required": [
+          "user_id",
+          "event_id",
+          "seat_id",
+          "email",
+          "amount"
+        ],
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "example": "firebase_uid_abc123"
+          },
+          "event_id": {
+            "type": "integer",
+            "example": 1
+          },
+          "seat_id": {
+            "type": "integer",
+            "example": 42
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "example": "user@example.com"
+          },
+          "amount": {
+            "type": "number",
+            "format": "double",
+            "example": 128.0
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "confirmed",
+              "cancelled",
+              "failed",
+              "expired",
+              "pending_refund",
+              "refunded"
+            ],
+            "description": "Defaults to pending if not provided"
+          },
+          "payment_intent_id": {
+            "type": "string"
+          }
+        }
+      },
+      "UpdateBookingRequest": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "confirmed",
+              "cancelled",
+              "failed",
+              "expired",
+              "pending_refund",
+              "refunded"
+            ]
+          },
+          "payment_intent_id": {
+            "type": "string"
+          }
+        }
+      },
+      "Seat": {
+        "type": "object",
+        "properties": {
+          "seat_id": {
+            "type": "integer",
+            "example": 42
+          },
+          "event_id": {
+            "type": "integer",
+            "example": 1
+          },
+          "section_id": {
+            "type": "integer",
+            "example": 3
+          },
+          "seat_number": {
+            "type": "integer",
+            "example": 15
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "available",
+              "reserved",
+              "booked"
+            ],
+            "example": "available"
+          },
+          "reserved_by": {
+            "type": "string",
+            "nullable": true,
+            "example": "firebase_uid_abc123"
+          },
+          "reserved_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "section_name": {
+            "type": "string",
+            "example": "CAT 1"
+          },
+          "section_price": {
+            "type": "number",
+            "format": "double",
+            "example": 248.0
+          }
+        }
+      },
+      "SectionAvailability": {
+        "type": "object",
+        "properties": {
+          "section_id": {
+            "type": "integer",
+            "example": 3
+          },
+          "section_name": {
+            "type": "string",
+            "example": "CAT 1"
+          },
+          "available": {
+            "type": "integer",
+            "example": 120
+          },
+          "total": {
+            "type": "integer",
+            "example": 500
+          },
+          "price": {
+            "type": "number",
+            "format": "double",
+            "example": 248.0
+          }
+        }
+      },
+      "SetupSeatsRequest": {
+        "type": "object",
+        "required": [
+          "event_id",
+          "sections"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "integer",
+            "example": 1
+          },
+          "sections": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SectionDefinition"
+            }
+          }
+        }
+      },
+      "SectionDefinition": {
+        "type": "object",
+        "required": [
+          "name",
+          "price",
+          "total_seats"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "CAT 1"
+          },
+          "price": {
+            "type": "number",
+            "format": "double",
+            "example": 248.0
+          },
+          "total_seats": {
+            "type": "integer",
+            "example": 500
+          }
+        }
+      },
+      "SeatActionRequest": {
+        "type": "object",
+        "required": [
+          "event_id",
+          "seat_id",
+          "user_id"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "integer",
+            "example": 1
+          },
+          "seat_id": {
+            "type": "integer",
+            "example": 42
+          },
+          "user_id": {
+            "type": "string",
+            "example": "firebase_uid_abc123"
+          }
+        }
+      },
+      "ReserveSeatResponse": {
+        "type": "object",
+        "properties": {
+          "seat_id": {
+            "type": "integer",
+            "example": 42
+          },
+          "event_id": {
+            "type": "integer",
+            "example": 1
+          },
+          "status": {
+            "type": "string",
+            "example": "reserved"
+          },
+          "auto_assigned": {
+            "type": "boolean",
+            "description": "True if a different seat was assigned because the requested one was taken",
+            "example": false
+          },
+          "originally_requested": {
+            "type": "integer",
+            "description": "The originally requested seat_id (present only when auto_assigned is true)",
+            "nullable": true,
+            "example": null
+          }
+        }
+      },
+      "CreatePaymentRequest": {
+        "type": "object",
+        "required": [
+          "booking_id",
+          "user_id",
+          "amount"
+        ],
+        "properties": {
+          "booking_id": {
+            "type": "integer",
+            "example": 101
+          },
+          "user_id": {
+            "type": "string",
+            "example": "firebase_uid_abc123"
+          },
+          "amount": {
+            "type": "number",
+            "format": "double",
+            "description": "Amount in SGD",
+            "example": 128.0
+          }
+        }
+      },
+      "CreatePaymentResponse": {
+        "type": "object",
+        "properties": {
+          "payment_intent_id": {
+            "type": "string",
+            "example": "pi_3abc123def456"
+          },
+          "client_secret": {
+            "type": "string",
+            "example": "pi_3abc123def456_secret_xyz"
+          },
+          "amount": {
+            "type": "number",
+            "format": "double",
+            "example": 128.0
+          }
+        }
+      },
+      "VerifyPaymentRequest": {
+        "type": "object",
+        "required": [
+          "payment_intent_id"
+        ],
+        "properties": {
+          "payment_intent_id": {
+            "type": "string",
+            "example": "pi_3abc123def456"
+          }
+        }
+      },
+      "VerifyPaymentResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "example": "succeeded"
+          },
+          "booking_id": {
+            "type": "integer",
+            "example": 101
+          },
+          "transaction_id": {
+            "type": "integer",
+            "example": 55
+          }
+        }
+      },
+      "Transaction": {
+        "type": "object",
+        "properties": {
+          "transaction_id": {
+            "type": "integer",
+            "example": 55
+          },
+          "booking_id": {
+            "type": "integer",
+            "example": 101
+          },
+          "user_id": {
+            "type": "string",
+            "example": "firebase_uid_abc123"
+          },
+          "amount": {
+            "type": "number",
+            "format": "double",
+            "example": 128.0
+          },
+          "currency": {
+            "type": "string",
+            "example": "SGD"
+          },
+          "stripe_payment_intent_id": {
+            "type": "string",
+            "example": "pi_3abc123def456"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "succeeded",
+              "failed",
+              "refunded",
+              "refund_failed"
+            ],
+            "example": "succeeded"
+          },
+          "refund_amount": {
+            "type": "number",
+            "format": "double",
+            "nullable": true,
+            "example": null
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "Notification": {
+        "type": "object",
+        "properties": {
+          "notification_id": {
+            "type": "integer"
+          },
+          "user_id": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "channel": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "SendOtpRequest": {
+        "type": "object",
+        "required": [
+          "mobile"
+        ],
+        "properties": {
+          "mobile": {
+            "type": "string",
+            "description": "Mobile number in E.164 format",
+            "example": "+6591234567"
+          }
+        }
+      },
+      "SendOtpResponse": {
+        "type": "object",
+        "properties": {
+          "verification_sid": {
+            "type": "string",
+            "description": "Twilio Verify SID for subsequent verification",
+            "example": "VExxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          }
+        }
+      },
+      "VerifyOtpRequest": {
+        "type": "object",
+        "required": [
+          "verification_sid",
+          "code"
+        ],
+        "properties": {
+          "verification_sid": {
+            "type": "string",
+            "example": "VExxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          },
+          "code": {
+            "type": "string",
+            "description": "6-digit OTP code",
+            "example": "123456"
+          }
+        }
+      },
+      "Ticket": {
+        "type": "object",
+        "properties": {
+          "ticket_id": {
+            "type": "integer",
+            "example": 77
+          },
+          "booking_id": {
+            "type": "integer",
+            "example": 101
+          },
+          "event_id": {
+            "type": "integer",
+            "example": 1
+          },
+          "user_id": {
+            "type": "string",
+            "example": "firebase_uid_abc123"
+          },
+          "seat_id": {
+            "type": "integer",
+            "example": 42
+          },
+          "qr_code_data": {
+            "type": "string",
+            "description": "Raw data encoded in the QR code",
+            "example": "TICKET-77-BOOKING-101"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "valid",
+              "invalidated"
+            ],
+            "example": "valid"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "qr_code_base64": {
+            "type": "string",
+            "description": "Base64-encoded PNG image of the QR code",
+            "example": "iVBORw0KGgoAAAANSUhEUgAA..."
+          }
+        }
+      },
+      "JoinWaitlistRequest": {
+        "type": "object",
+        "required": [
+          "event_id",
+          "user_id",
+          "email"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "integer",
+            "example": 1
+          },
+          "user_id": {
+            "type": "string",
+            "example": "firebase_uid_abc123"
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "example": "user@example.com"
+          },
+          "phone": {
+            "type": "string",
+            "example": "+6591234567"
+          },
+          "preferred_section": {
+            "type": "string",
+            "example": "CAT 1"
+          }
+        }
+      },
+      "JoinWaitlistResponse": {
+        "type": "object",
+        "properties": {
+          "entry_id": {
+            "type": "integer",
+            "example": 12
+          },
+          "position": {
+            "type": "integer",
+            "example": 3
+          },
+          "event_id": {
+            "type": "integer",
+            "example": 1
+          }
+        }
+      },
+      "WaitlistPosition": {
+        "type": "object",
+        "properties": {
+          "entry_id": {
+            "type": "integer",
+            "example": 12
+          },
+          "position": {
+            "type": "integer",
+            "example": 3
+          },
+          "status": {
+            "type": "string",
+            "example": "waiting"
+          },
+          "promoted_seat_id": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Seat ID assigned upon promotion (null if not yet promoted)",
+            "example": null
+          },
+          "promotion_expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Deadline to accept promoted seat (null if not yet promoted)",
+            "example": null
+          }
+        }
+      },
+      "FeeRecord": {
+        "type": "object",
+        "properties": {
+          "fee_id": {
+            "type": "integer"
+          },
+          "booking_id": {
+            "type": "integer"
+          },
+          "event_id": {
+            "type": "integer"
+          },
+          "amount": {
+            "type": "number",
+            "format": "double"
+          },
+          "fee_type": {
+            "type": "string"
+          },
+          "refund_amount": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "EventFeeSummary": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer",
+            "description": "Number of fee records",
+            "example": 45
+          },
+          "total_fees": {
+            "type": "number",
+            "format": "double",
+            "description": "Sum of all fees collected",
+            "example": 2250.0
+          },
+          "total_refunds": {
+            "type": "number",
+            "format": "double",
+            "description": "Sum of all refunds issued",
+            "example": 380.0
+          },
+          "records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FeeRecord"
+            }
+          }
+        }
+      },
+      "InitiateBookingRequest": {
+        "type": "object",
+        "required": [
+          "user_id",
+          "event_id",
+          "seat_id",
+          "email"
+        ],
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "description": "Firebase UID. Must not be \"admin\".",
+            "example": "firebase_uid_abc123"
+          },
+          "event_id": {
+            "type": "integer",
+            "example": 1
+          },
+          "seat_id": {
+            "type": "integer",
+            "example": 42
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "example": "user@example.com"
+          },
+          "phone": {
+            "type": "string",
+            "example": "+6591234567"
+          }
+        }
+      },
+      "InitiateBookingResponse": {
+        "type": "object",
+        "properties": {
+          "saga_id": {
+            "type": "string",
+            "format": "uuid",
+            "example": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+          },
+          "booking_id": {
+            "type": "integer",
+            "example": 101
+          },
+          "seat_id": {
+            "type": "integer",
+            "example": 42
+          },
+          "seat_data": {
+            "$ref": "#/components/schemas/Seat"
+          },
+          "client_secret": {
+            "type": "string",
+            "description": "Stripe client secret for frontend payment confirmation",
+            "example": "pi_3abc123def456_secret_xyz"
+          },
+          "payment_intent_id": {
+            "type": "string",
+            "example": "pi_3abc123def456"
+          },
+          "amount": {
+            "type": "number",
+            "format": "double",
+            "example": 248.0
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Saga expiration time (seat reservation timeout)"
+          }
+        }
+      },
+      "ConfirmBookingRequest": {
+        "type": "object",
+        "required": [
+          "saga_id",
+          "payment_intent_id"
+        ],
+        "properties": {
+          "saga_id": {
+            "type": "string",
+            "format": "uuid",
+            "example": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+          },
+          "payment_intent_id": {
+            "type": "string",
+            "example": "pi_3abc123def456"
+          }
+        }
+      },
+      "ConfirmBookingResponse": {
+        "type": "object",
+        "properties": {
+          "saga_id": {
+            "type": "string",
+            "format": "uuid",
+            "example": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+          },
+          "status": {
+            "type": "string",
+            "example": "confirmed"
+          },
+          "booking_id": {
+            "type": "integer",
+            "example": 101
+          }
+        }
+      },
+      "RefundBookingRequest": {
+        "type": "object",
+        "required": [
+          "user_id"
+        ],
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "example": "firebase_uid_abc123"
+          }
+        }
+      },
+      "RefundBookingResponse": {
+        "type": "object",
+        "properties": {
+          "booking_id": {
+            "type": "integer",
+            "example": 101
+          },
+          "status": {
+            "type": "string",
+            "example": "refunded"
+          },
+          "original_amount": {
+            "type": "number",
+            "format": "double",
+            "example": 248.0
+          },
+          "service_fee": {
+            "type": "number",
+            "format": "double",
+            "example": 24.8
+          },
+          "net_refund": {
+            "type": "number",
+            "format": "double",
+            "example": 223.2
+          }
+        }
+      },
+      "CreateEventRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "event_date",
+          "sections"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "Taylor Swift Eras Tour"
+          },
+          "event_date": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-06-15T19:00:00Z"
+          },
+          "sections": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SectionDefinition"
+            }
+          },
+          "description": {
+            "type": "string",
+            "example": "Concert at National Stadium"
+          },
+          "category": {
+            "type": "string",
+            "example": "Concert"
+          },
+          "venue": {
+            "type": "string",
+            "example": "National Stadium"
+          },
+          "price_min": {
+            "type": "number",
+            "format": "double",
+            "example": 88.0
+          },
+          "price_max": {
+            "type": "number",
+            "format": "double",
+            "example": 348.0
+          },
+          "image_url": {
+            "type": "string",
+            "format": "uri",
+            "example": "https://example.com/events/poster.jpg"
+          }
+        }
+      },
+      "CreateEventResponse": {
+        "type": "object",
+        "properties": {
+          "event_id": {
+            "type": "integer",
+            "example": 1
+          },
+          "seats_created": {
+            "type": "boolean",
+            "example": true
+          },
+          "sections": {
+            "type": "integer",
+            "description": "Number of sections created",
+            "example": 4
+          },
+          "total_seats": {
+            "type": "integer",
+            "description": "Total number of seats created across all sections",
+            "example": 5000
+          }
+        }
+      },
+      "CancelEventResponse": {
+        "type": "object",
+        "properties": {
+          "event_id": {
+            "type": "integer",
+            "example": 1
+          },
+          "status": {
+            "type": "string",
+            "example": "cancelled"
+          }
+        }
+      },
+      "SagaLog": {
+        "type": "object",
+        "properties": {
+          "saga_id": {
+            "type": "string",
+            "format": "uuid",
+            "example": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+          },
+          "saga_type": {
+            "type": "string",
+            "example": "booking"
+          },
+          "status": {
+            "type": "string",
+            "example": "confirmed"
+          },
+          "user_id": {
+            "type": "string",
+            "example": "firebase_uid_abc123"
+          },
+          "event_id": {
+            "type": "integer",
+            "example": 1
+          },
+          "booking_id": {
+            "type": "integer",
+            "example": 101
+          },
+          "seat_id": {
+            "type": "integer",
+            "example": 42
+          },
+          "payment_intent_id": {
+            "type": "string",
+            "example": "pi_3abc123def456"
+          },
+          "steps": {
+            "type": "array",
+            "description": "Ordered list of saga steps and their outcomes",
+            "items": {
+              "$ref": "#/components/schemas/SagaStep"
+            }
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "SagaStep": {
+        "type": "object",
+        "properties": {
+          "step": {
+            "type": "string",
+            "description": "Step name",
+            "example": "reserve_seat"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "completed",
+              "failed",
+              "compensated"
+            ],
+            "example": "completed"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "details": {
+            "type": "object",
+            "description": "Step-specific details",
+            "additionalProperties": true
+          }
+        }
+      }
+    }
+  }
+}

@@ -142,9 +142,9 @@ def join_waitlist():
         if existing:
             return error("Already on waitlist for this event", 409)
 
-        # Calculate next position
+        # Calculate next position (per section)
         max_pos = db.session.query(db.func.max(WaitlistEntry.position)).filter_by(
-            event_id=event_id
+            event_id=event_id, preferred_section=preferred_section, status='waiting'
         ).scalar()
         next_position = (max_pos or 0) + 1
 
